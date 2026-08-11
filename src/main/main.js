@@ -112,12 +112,15 @@ let ttsSocket = null;
 let ttsBuffer = "";
 let ttsFlushTimer = null;
 let ttsSeq = 0;
-// Sentence boundary: 。！？.!? (full/half-width) plus newlines. Keep the
-// delimiter with the sentence so the spoken audio pauses naturally.
-const TTS_SENTENCE_BOUNDARY_RE = /([^。！？.!?!\n]*[。！？.!?\n]+|[^。！？.!?!\n]+$)/g;
+// True once the first sentence of the current reply has been sent for
+// synthesis. The first sentence is spoken eagerly (low first-word latency);
+// everything after it is synthesized as ONE clip at turn-idle so the rest of
+// the reply plays back gap-free.
+let ttsFirstSpoken = false;
 
 function ttsResetBuffer() {
   ttsBuffer = "";
+  ttsFirstSpoken = false;
   clearTimeout(ttsFlushTimer);
   ttsFlushTimer = null;
 }
@@ -150,28 +153,18 @@ function ttsSpeak(text) {
   if (socket) minimaxTts.sendText(socket, trimmed);
 }
 
-// Pull complete sentences out of the accumulating buffer and speak them,
-// leaving any partial trailing sentence for the next chunk / turn-idle.
-function ttsDrainSentences() {
-  if (!ttsBuffer) return;
-  const matches = ttsBuffer.match(TTS_SENTENCE_BOUNDARY_RE) || [];
-  // The last match is partial (no trailing delimiter) unless the buffer
-  // ended on a boundary — keep it buffered for more text.
-  let consumed = "";
-  for (let i = 0; i < matches.length - 1; i += 1) {
-    consumed += matches[i];
-    ttsSpeak(matches[i]);
-  }
-  const last = matches[matches.length - 1] || "";
-  if (/[。！？.!?\n]/.test(last)) {
-    // ended on a boundary — speak it too, nothing left over.
-    consumed += last;
-    ttsSpeak(last);
-    ttsBuffer = ttsBuffer.slice(consumed.length);
-  } else {
-    // keep the partial tail
-    ttsBuffer = ttsBuffer.slice(consumed.length);
-  }
+// Speak ONLY the first complete sentence in the buffer, the moment it has
+// closed on a sentence boundary. This gives low first-word latency; the rest
+// of the reply is synthesized as one clip at turn-idle (gap-free). Anything
+// before/at the first boundary is consumed; the remainder stays buffered.
+function ttsSpeakFirstSentence() {
+  if (ttsFirstSpoken || !ttsBuffer) return;
+  const boundaryIdx = ttsBuffer.search(/[。！？.!?\n]/);
+  if (boundaryIdx === -1) return; // no complete sentence yet
+  const first = ttsBuffer.slice(0, boundaryIdx + 1);
+  ttsBuffer = ttsBuffer.slice(boundaryIdx + 1);
+  ttsFirstSpoken = true;
+  ttsSpeak(first);
 }
 
 // One-shot TTS synthesis for the settings-window "test" button. Pushes the
@@ -2265,8 +2258,7 @@ if (!gotSingleInstanceLock) {
           // A fresh user turn (not an auto-continue chain) starts a new reply:
           // clear any text accumulated for the previous turn and cancel any
           // in-flight synthesis. Chained Codex continuations keep the buffer
-          // so the partial reply + continuation flow into the same sentence
-          // pipeline.
+          // so the continuation joins the in-progress reply's tail.
           if (minimaxTts.enabled() && !event.chained) {
             ttsResetBuffer();
             minimaxTts.close();
@@ -2276,9 +2268,8 @@ if (!gotSingleInstanceLock) {
           // Output stopped — now begin the idle countdown from this moment.
           chatTurnRunning = false;
           scheduleDesktopPet();
-          // Flush any trailing text that didn't end on a sentence boundary so
-          // the last fragment is still spoken. (Sentences are synthesized as
-          // they arrive during streaming; this only handles the tail.)
+          // The first sentence was already spoken eagerly; synthesize the
+          // rest of the reply as one gap-free clip now that it's complete.
           if (minimaxTts.enabled() && ttsBuffer.trim()) {
             ttsSpeak(ttsBuffer.trim());
             ttsBuffer = "";
@@ -2302,13 +2293,12 @@ if (!gotSingleInstanceLock) {
         messageId: event.messageId,
         text: event.text
       });
-      // Accumulate the Agent's reply text; complete sentences are spoken
-      // as they stream in (one non-streaming request each) so playback
-      // starts early. The trailing partial stays buffered until the next
-      // boundary or turn-idle.
+      // Accumulate the Agent's reply text. The FIRST complete sentence is
+      // spoken eagerly (low first-word latency); the rest is synthesized as
+      // one gap-free clip at turn-idle.
       if (event.text) {
         ttsBuffer += event.text;
-        if (minimaxTts.enabled()) ttsDrainSentences();
+        if (minimaxTts.enabled()) ttsSpeakFirstSentence();
       }
     } else if (event.kind === "status") {
       popover.webContents.send("chat:status", event);
