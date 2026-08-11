@@ -104,17 +104,74 @@ let priestessSettingsWindow = null;
 let personaNotesWindow = null;
 let creditsWindow = null;
 let minimaxTtsSettingsWindow = null;
-// TTS state — the HTTP T2A request is fired once per Agent reply, at
-// turn-idle (debounced), with the accumulated full text (gap-free audio).
+// TTS state — sentences are synthesized as they stream in (non-streaming
+// HTTP, one request per sentence) so playback starts on the first sentence
+// instead of waiting for the whole reply. The renderer plays sentence clips
+// in arrival order via a per-clip sequence number.
 let ttsSocket = null;
 let ttsBuffer = "";
 let ttsFlushTimer = null;
-let ttsFireTimer = null;
+let ttsSeq = 0;
+// Sentence boundary: 。！？.!? (full/half-width) plus newlines. Keep the
+// delimiter with the sentence so the spoken audio pauses naturally.
+const TTS_SENTENCE_BOUNDARY_RE = /([^。！？.!?!\n]*[。！？.!?\n]+|[^。！？.!?!\n]+$)/g;
 
 function ttsResetBuffer() {
   ttsBuffer = "";
   clearTimeout(ttsFlushTimer);
   ttsFlushTimer = null;
+}
+
+// Synthesize one sentence (or sentence cluster) as a single non-streaming
+// request; the complete clip is pushed to the renderer with a sequence
+// number so playback stays in order even if responses arrive out of order.
+function ttsSpeak(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || !minimaxTts.enabled()) return;
+  ttsSeq += 1;
+  const seq = ttsSeq;
+  const socket = minimaxTts.startTask({
+    onAudio(buf) {
+      if (popover && !popover.isDestroyed()) {
+        popover.webContents.send("minimax-tts:audio", {
+          buffer: buf.toString("base64"),
+          isFinal: true,
+          seq,
+          format: String(settings.get("minimaxTtsFormat") || "mp3"),
+          sampleRate: Number(settings.get("minimaxTtsSampleRate")) || 32000,
+        });
+      }
+    },
+    onDone() {},
+    onError(err) {
+      console.warn("main: minimax TTS error", err.message);
+    },
+  });
+  if (socket) minimaxTts.sendText(socket, trimmed);
+}
+
+// Pull complete sentences out of the accumulating buffer and speak them,
+// leaving any partial trailing sentence for the next chunk / turn-idle.
+function ttsDrainSentences() {
+  if (!ttsBuffer) return;
+  const matches = ttsBuffer.match(TTS_SENTENCE_BOUNDARY_RE) || [];
+  // The last match is partial (no trailing delimiter) unless the buffer
+  // ended on a boundary — keep it buffered for more text.
+  let consumed = "";
+  for (let i = 0; i < matches.length - 1; i += 1) {
+    consumed += matches[i];
+    ttsSpeak(matches[i]);
+  }
+  const last = matches[matches.length - 1] || "";
+  if (/[。！？.!?\n]/.test(last)) {
+    // ended on a boundary — speak it too, nothing left over.
+    consumed += last;
+    ttsSpeak(last);
+    ttsBuffer = ttsBuffer.slice(consumed.length);
+  } else {
+    // keep the partial tail
+    ttsBuffer = ttsBuffer.slice(consumed.length);
+  }
 }
 
 // One-shot TTS synthesis for the settings-window "test" button. Pushes the
@@ -2206,65 +2263,31 @@ if (!gotSingleInstanceLock) {
           chatTurnRunning = true;
           hideDesktopPet();
           // A fresh user turn (not an auto-continue chain) starts a new reply:
-          // clear any text accumulated for the previous turn and cancel a
-          // pending "speak" trigger. Chained Codex continuations keep the
-          // buffer so the partial reply + continuation synthesize as one.
-          if (ttsFireTimer) {
-            clearTimeout(ttsFireTimer);
-            ttsFireTimer = null;
-          }
+          // clear any text accumulated for the previous turn and cancel any
+          // in-flight synthesis. Chained Codex continuations keep the buffer
+          // so the partial reply + continuation flow into the same sentence
+          // pipeline.
           if (minimaxTts.enabled() && !event.chained) {
             ttsResetBuffer();
             minimaxTts.close();
-            ttsSocket = null;
+            ttsSeq = 0;
           }
         } else if (event.status === "idle") {
           // Output stopped — now begin the idle countdown from this moment.
           chatTurnRunning = false;
           scheduleDesktopPet();
-          // Debounce the "speak" trigger: Codex auto-continue emits a
-          // transient idle between the first partial reply and the
-          // continuation, which used to fire a half-text TTS request that
-          // then got aborted mid-word when the continuation started. Wait a
-          // beat; if no new "running" arrives, the turn is truly done and we
-          // synthesize the whole accumulated text in one gap-free request.
+          // Flush any trailing text that didn't end on a sentence boundary so
+          // the last fragment is still spoken. (Sentences are synthesized as
+          // they arrive during streaming; this only handles the tail.)
           if (minimaxTts.enabled() && ttsBuffer.trim()) {
-            clearTimeout(ttsFireTimer);
-            ttsFireTimer = setTimeout(() => {
-              ttsFireTimer = null;
-              const fullText = ttsBuffer.trim();
-              if (!fullText) return;
-              ttsBuffer = "";
-              minimaxTts.close();
-              ttsSocket = minimaxTts.startTask({
-                onAudio(buf, isFinal) {
-                  if (popover && !popover.isDestroyed()) {
-                    popover.webContents.send("minimax-tts:audio", {
-                      buffer: buf.toString("base64"),
-                      isFinal: Boolean(isFinal),
-                      format: String(settings.get("minimaxTtsFormat") || "mp3"),
-                      sampleRate: Number(settings.get("minimaxTtsSampleRate")) || 32000,
-                    });
-                  }
-                },
-                onDone() {
-                  ttsSocket = null;
-                },
-                onError(err) {
-                  console.warn("main: minimax TTS error", err.message);
-                  ttsSocket = null;
-                },
-              });
-              if (ttsSocket) minimaxTts.sendText(ttsSocket, fullText);
-            }, 450);
+            ttsSpeak(ttsBuffer.trim());
+            ttsBuffer = "";
           }
         }
       }
     } else if (event.kind === "proactive") {
       if (event.spoke && event.text) notifyProactiveMessage(event.text);
     } else if (event.kind === "quit") {
-      clearTimeout(ttsFireTimer);
-      ttsFireTimer = null;
       minimaxTts.close();
       // Boundary quit must run even if the popover window is gone.
       wipePersistedConversation();
@@ -2279,9 +2302,14 @@ if (!gotSingleInstanceLock) {
         messageId: event.messageId,
         text: event.text
       });
-      // Accumulate the Agent's reply text; the HTTP T2A request is fired once
-      // at turn-idle (debounced) with the full text — gap-free audio.
-      if (event.text) ttsBuffer += event.text;
+      // Accumulate the Agent's reply text; complete sentences are spoken
+      // as they stream in (one non-streaming request each) so playback
+      // starts early. The trailing partial stays buffered until the next
+      // boundary or turn-idle.
+      if (event.text) {
+        ttsBuffer += event.text;
+        if (minimaxTts.enabled()) ttsDrainSentences();
+      }
     } else if (event.kind === "status") {
       popover.webContents.send("chat:status", event);
     } else if (event.kind === "tool") {

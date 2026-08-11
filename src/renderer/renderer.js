@@ -2120,13 +2120,20 @@ window.chatApi.onQueue?.(({ length }) => {
 });
 
 // ============================================================
-//  MiniMax TTS playback — the main process synthesizes the whole
-//  reply as one non-streaming HTTP request, so onAudio delivers a
-//  single COMPLETE audio buffer (isFinal=true). We play it as one
-//  blob — smooth, no chunk edges. A new reply interrupts any audio
-//  still playing from the previous one.
+//  MiniMax TTS playback — the main process synthesizes sentences
+//  as they stream in (one non-streaming HTTP request each) and
+//  delivers each complete clip with a sequence number. We buffer
+//  clips by seq and play them strictly in order so a faster
+//  later sentence doesn't jump ahead of a slower earlier one.
+//  A clip whose seq is older than what we're already playing
+//  signals a brand-new turn → flush the queue.
 // ============================================================
 const ttsAudioEl = new Audio();
+// Buffered clips keyed by seq; played in ascending seq order.
+const ttsClips = new Map();
+let ttsNextSeq = 1;        // next seq to play
+let ttsPlaying = false;
+let ttsCurrentUrl = null;
 
 let ttsPcmCtx = null;
 function ttsPcmContext(sampleRate) {
@@ -2144,12 +2151,54 @@ function mimeTypeFor(fmt) {
     : "audio/mpeg";
 }
 
+function ttsFlushQueue() {
+  // A new turn started: drop everything pending and stop current playback.
+  for (const url of ttsClips.values()) URL.revokeObjectURL(url);
+  ttsClips.clear();
+  try { ttsAudioEl.pause(); } catch (_) { /* ignore */ }
+  if (ttsCurrentUrl) { URL.revokeObjectURL(ttsCurrentUrl); ttsCurrentUrl = null; }
+  ttsPlaying = false;
+}
+
+function ttsPlayNext() {
+  if (ttsPlaying) return;
+  const clip = ttsClips.get(ttsNextSeq);
+  if (!clip) return;
+  ttsClips.delete(ttsNextSeq);
+  ttsPlaying = true;
+  if (ttsCurrentUrl) { URL.revokeObjectURL(ttsCurrentUrl); }
+  ttsCurrentUrl = clip.url;
+  ttsAudioEl.src = clip.url;
+  const thisSeq = ttsNextSeq;
+  const onEnded = () => {
+    if (ttsCurrentUrl === clip.url) { URL.revokeObjectURL(ttsCurrentUrl); ttsCurrentUrl = null; }
+    ttsAudioEl.removeEventListener("ended", onEnded);
+    ttsAudioEl.removeEventListener("error", onEnded);
+    ttsPlaying = false;
+    ttsNextSeq = thisSeq + 1;
+    ttsPlayNext();
+  };
+  ttsAudioEl.addEventListener("ended", onEnded);
+  ttsAudioEl.addEventListener("error", onEnded);
+  ttsAudioEl
+    .play()
+    .catch((err) => {
+      console.warn("tts: play failed", err?.message || err);
+      onEnded();
+    });
+}
+
 window.minimaxTtsApi?.onAudio?.((payload) => {
   if (!payload || !payload.buffer) return;
+  const seq = Number(payload.seq) || 0;
+  // A seq reset to 1 from the main process = a brand-new turn → flush.
+  if (seq <= 1 || seq < ttsNextSeq) ttsFlushQueue();
+
   const fmt = payload.format || "mp3";
   const bytes = Uint8Array.from(atob(payload.buffer), (c) => c.charCodeAt(0));
 
-  // Raw PCM has no container header; play straight through an AudioContext.
+  // PCM: play straight through an AudioContext (no queue — low latency,
+  // and PCM clips are usually short). Encoded clips go through the seq queue.
   if (fmt === "pcm") {
     const ctx = ttsPcmContext(Number(payload.sampleRate) || 32000);
     if (!ctx) return;
@@ -2169,24 +2218,9 @@ window.minimaxTtsApi?.onAudio?.((payload) => {
     return;
   }
 
-  // Encoded formats (MP3/WAV/FLAC/Opus): one complete blob, play it whole.
   const blob = new Blob([bytes], { type: mimeTypeFor(fmt) });
-  const url = URL.createObjectURL(blob);
-  // Stop + revoke any previous clip so a new reply replaces it cleanly.
-  try { ttsAudioEl.pause(); } catch (_) { /* ignore */ }
-  if (ttsAudioEl.dataset.url) URL.revokeObjectURL(ttsAudioEl.dataset.url);
-  ttsAudioEl.dataset.url = url;
-  ttsAudioEl.src = url;
-  ttsAudioEl
-    .play()
-    .catch((err) => console.warn("tts: play failed", err?.message || err))
-    .finally(() => {
-      // Revoke after playback starts so the URL can be GC'd once the element
-      // has buffered the data.
-      if (ttsAudioEl.dataset.url === url) {
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      }
-    });
+  ttsClips.set(seq, { url: URL.createObjectURL(blob) });
+  ttsPlayNext();
 });
 
 window.petApi?.onSettings?.(renderSettings);
