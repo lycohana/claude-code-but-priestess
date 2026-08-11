@@ -2119,6 +2119,76 @@ window.chatApi.onQueue?.(({ length }) => {
   refreshComposerMeta();
 });
 
+// ============================================================
+//  MiniMax TTS playback — the main process synthesizes the whole
+//  reply as one non-streaming HTTP request, so onAudio delivers a
+//  single COMPLETE audio buffer (isFinal=true). We play it as one
+//  blob — smooth, no chunk edges. A new reply interrupts any audio
+//  still playing from the previous one.
+// ============================================================
+const ttsAudioEl = new Audio();
+
+let ttsPcmCtx = null;
+function ttsPcmContext(sampleRate) {
+  if (!ttsPcmCtx || ttsPcmCtx.sampleRate !== sampleRate) {
+    try { ttsPcmCtx = new AudioContext({ sampleRate }); }
+    catch { ttsPcmCtx = null; }
+  }
+  return ttsPcmCtx;
+}
+
+function mimeTypeFor(fmt) {
+  return fmt === "wav" ? "audio/wav"
+    : fmt === "flac" ? "audio/flac"
+    : fmt === "opus" ? "audio/ogg"
+    : "audio/mpeg";
+}
+
+window.minimaxTtsApi?.onAudio?.((payload) => {
+  if (!payload || !payload.buffer) return;
+  const fmt = payload.format || "mp3";
+  const bytes = Uint8Array.from(atob(payload.buffer), (c) => c.charCodeAt(0));
+
+  // Raw PCM has no container header; play straight through an AudioContext.
+  if (fmt === "pcm") {
+    const ctx = ttsPcmContext(Number(payload.sampleRate) || 32000);
+    if (!ctx) return;
+    const sampleCount = bytes.length >> 1;
+    if (sampleCount === 0) return;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const float32 = new Float32Array(sampleCount);
+    for (let i = 0; i < sampleCount; i += 1) {
+      float32[i] = view.getInt16(i * 2, true) / 32768;
+    }
+    const buffer = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+    buffer.copyToChannel(float32, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start();
+    return;
+  }
+
+  // Encoded formats (MP3/WAV/FLAC/Opus): one complete blob, play it whole.
+  const blob = new Blob([bytes], { type: mimeTypeFor(fmt) });
+  const url = URL.createObjectURL(blob);
+  // Stop + revoke any previous clip so a new reply replaces it cleanly.
+  try { ttsAudioEl.pause(); } catch (_) { /* ignore */ }
+  if (ttsAudioEl.dataset.url) URL.revokeObjectURL(ttsAudioEl.dataset.url);
+  ttsAudioEl.dataset.url = url;
+  ttsAudioEl.src = url;
+  ttsAudioEl
+    .play()
+    .catch((err) => console.warn("tts: play failed", err?.message || err))
+    .finally(() => {
+      // Revoke after playback starts so the URL can be GC'd once the element
+      // has buffered the data.
+      if (ttsAudioEl.dataset.url === url) {
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+    });
+});
+
 window.petApi?.onSettings?.(renderSettings);
 window.petApi?.onCatMode?.(applyCatMode);
 

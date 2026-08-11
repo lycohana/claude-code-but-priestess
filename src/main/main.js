@@ -34,6 +34,7 @@ const {
   resolveCodexModel
 } = require("./codex-model-catalog");
 const wsServer = require("./ws-server");
+const minimaxTts = require("./minimax-tts");
 
 let conversationFile = null;
 let saveTimer = null;
@@ -102,6 +103,50 @@ let windowFadeTimer = null;
 let priestessSettingsWindow = null;
 let personaNotesWindow = null;
 let creditsWindow = null;
+let minimaxTtsSettingsWindow = null;
+// TTS state — the HTTP T2A request is fired once per Agent reply, at
+// turn-idle (debounced), with the accumulated full text (gap-free audio).
+let ttsSocket = null;
+let ttsBuffer = "";
+let ttsFlushTimer = null;
+let ttsFireTimer = null;
+
+function ttsResetBuffer() {
+  ttsBuffer = "";
+  clearTimeout(ttsFlushTimer);
+  ttsFlushTimer = null;
+}
+
+// One-shot TTS synthesis for the settings-window "test" button. Pushes the
+// synthesized audio to whichever window is asking (the settings window), so
+// the Doctor can hear the configured voice without sending a chat message.
+function ttsOneShotTest(text, senderWindow) {
+  if (!minimaxTts.enabled()) return { ok: false, reason: "disabled" };
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return { ok: false, reason: "empty" };
+  minimaxTts.close();
+  const socket = minimaxTts.startTask({
+    onAudio(buf) {
+      // Non-streaming delivers the whole audio in one callback.
+      if (senderWindow && !senderWindow.isDestroyed()) {
+        senderWindow.webContents.send("minimax-tts:audio", {
+          buffer: buf.toString("base64"),
+          isFinal: true,
+          format: String(settings.get("minimaxTtsFormat") || "mp3"),
+          sampleRate: Number(settings.get("minimaxTtsSampleRate")) || 32000,
+        });
+      }
+    },
+    onDone() {},
+    onError(err) {
+      console.warn("main: minimax TTS test error", err.message);
+    },
+  });
+  if (!socket) return { ok: false, reason: "connect-failed" };
+  // Non-streaming HTTP: sendText fires the single request immediately.
+  minimaxTts.sendText(socket, trimmed);
+  return { ok: true };
+}
 
 // Contributors, ordered by first contribution. Roles are one concise line each
 // (a credits screen, not a changelog). The artist is listed last with her own
@@ -245,6 +290,42 @@ function openCreditsWindow() {
   });
   creditsWindow.on("closed", () => {
     creditsWindow = null;
+  });
+}
+
+function openMinimaxTtsSettings() {
+  if (minimaxTtsSettingsWindow && !minimaxTtsSettingsWindow.isDestroyed()) {
+    minimaxTtsSettingsWindow.show();
+    minimaxTtsSettingsWindow.focus();
+    return;
+  }
+  minimaxTtsSettingsWindow = new BrowserWindow({
+    width: 460,
+    height: 560,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    title: "PRTS · 语音合成",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#11151a" : "#e9edf2",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  minimaxTtsSettingsWindow.setMenuBarVisibility?.(false);
+  hardenWebContents(minimaxTtsSettingsWindow.webContents);
+  minimaxTtsSettingsWindow.loadFile(
+    path.join(__dirname, "..", "renderer", "minimax-tts-settings.html")
+  );
+  minimaxTtsSettingsWindow.once("ready-to-show", () => {
+    minimaxTtsSettingsWindow?.show();
+    minimaxTtsSettingsWindow?.focus();
+  });
+  minimaxTtsSettingsWindow.on("closed", () => {
+    minimaxTtsSettingsWindow = null;
   });
 }
 
@@ -1033,6 +1114,7 @@ const MENU_TEXT = {
     usageBackendOne: (provider) => `使用后端：${provider}`,
     priestessSettings: "内置普瑞赛斯设置…",
     personaNotes: "补充校准…",
+    minimaxTtsSettings: "语音合成设置…",
     modelClaude: "模型（Claude）",
     modelCodex: "模型（Codex）",
     reasoningClaude: "推理强度（Claude）",
@@ -1119,6 +1201,7 @@ const MENU_TEXT = {
     usageBackendOne: (provider) => `Usage backend: ${provider}`,
     priestessSettings: "Built-in Priestess settings…",
     personaNotes: "Persona supplement…",
+    minimaxTtsSettings: "Voice synthesis settings…",
     modelClaude: "Model (Claude)",
     modelCodex: "Model (Codex)",
     reasoningClaude: "Reasoning effort (Claude)",
@@ -1712,6 +1795,10 @@ function buildContextMenu() {
       click: () => openPriestessSettings()
     },
     {
+      label: mt("minimaxTtsSettings"),
+      click: () => openMinimaxTtsSettings()
+    },
+    {
       label: mt("personaNotes"),
       click: () => openPersonaNotesWindow()
     },
@@ -2118,15 +2205,67 @@ if (!gotSingleInstanceLock) {
         if (event.status === "running") {
           chatTurnRunning = true;
           hideDesktopPet();
+          // A fresh user turn (not an auto-continue chain) starts a new reply:
+          // clear any text accumulated for the previous turn and cancel a
+          // pending "speak" trigger. Chained Codex continuations keep the
+          // buffer so the partial reply + continuation synthesize as one.
+          if (ttsFireTimer) {
+            clearTimeout(ttsFireTimer);
+            ttsFireTimer = null;
+          }
+          if (minimaxTts.enabled() && !event.chained) {
+            ttsResetBuffer();
+            minimaxTts.close();
+            ttsSocket = null;
+          }
         } else if (event.status === "idle") {
           // Output stopped — now begin the idle countdown from this moment.
           chatTurnRunning = false;
           scheduleDesktopPet();
+          // Debounce the "speak" trigger: Codex auto-continue emits a
+          // transient idle between the first partial reply and the
+          // continuation, which used to fire a half-text TTS request that
+          // then got aborted mid-word when the continuation started. Wait a
+          // beat; if no new "running" arrives, the turn is truly done and we
+          // synthesize the whole accumulated text in one gap-free request.
+          if (minimaxTts.enabled() && ttsBuffer.trim()) {
+            clearTimeout(ttsFireTimer);
+            ttsFireTimer = setTimeout(() => {
+              ttsFireTimer = null;
+              const fullText = ttsBuffer.trim();
+              if (!fullText) return;
+              ttsBuffer = "";
+              minimaxTts.close();
+              ttsSocket = minimaxTts.startTask({
+                onAudio(buf, isFinal) {
+                  if (popover && !popover.isDestroyed()) {
+                    popover.webContents.send("minimax-tts:audio", {
+                      buffer: buf.toString("base64"),
+                      isFinal: Boolean(isFinal),
+                      format: String(settings.get("minimaxTtsFormat") || "mp3"),
+                      sampleRate: Number(settings.get("minimaxTtsSampleRate")) || 32000,
+                    });
+                  }
+                },
+                onDone() {
+                  ttsSocket = null;
+                },
+                onError(err) {
+                  console.warn("main: minimax TTS error", err.message);
+                  ttsSocket = null;
+                },
+              });
+              if (ttsSocket) minimaxTts.sendText(ttsSocket, fullText);
+            }, 450);
+          }
         }
       }
     } else if (event.kind === "proactive") {
       if (event.spoke && event.text) notifyProactiveMessage(event.text);
     } else if (event.kind === "quit") {
+      clearTimeout(ttsFireTimer);
+      ttsFireTimer = null;
+      minimaxTts.close();
       // Boundary quit must run even if the popover window is gone.
       wipePersistedConversation();
       setTimeout(() => app.exit(0), 1500);
@@ -2140,6 +2279,9 @@ if (!gotSingleInstanceLock) {
         messageId: event.messageId,
         text: event.text
       });
+      // Accumulate the Agent's reply text; the HTTP T2A request is fired once
+      // at turn-idle (debounced) with the full text — gap-free audio.
+      if (event.text) ttsBuffer += event.text;
     } else if (event.kind === "status") {
       popover.webContents.send("chat:status", event);
     } else if (event.kind === "tool") {
@@ -2174,6 +2316,7 @@ app.on("before-quit", () => {
   chat.cancel();
   try { require("./vscode-chat").cancel(); } catch (_) { /* ignore */ }
   try { wsServer.stop(); } catch (_) { /* ignore */ }
+  try { minimaxTts.close(); } catch (_) { /* ignore */ }
 });
 
 // ============================================================
@@ -2320,6 +2463,72 @@ ipcMain.handle("priestess:test-connection", (_, cfg) =>
 
 ipcMain.handle("priestess:close-settings", () => {
   priestessSettingsWindow?.close();
+});
+
+// MiniMax TTS settings — read/written only to local settings.json.
+ipcMain.handle("minimax-tts:get-config", () => ({
+  enabled: Boolean(settings.get("minimaxTtsEnabled")),
+  apiKey: String(settings.get("minimaxTtsApiKey") || ""),
+  voiceId: String(settings.get("minimaxTtsVoiceId") || ""),
+  model: String(settings.get("minimaxTtsModel") || "speech-2.8-hd"),
+  speed: Number(settings.get("minimaxTtsSpeed")) || 1.0,
+  vol: Number(settings.get("minimaxTtsVol")) || 1.0,
+  pitch: Math.round(Number(settings.get("minimaxTtsPitch")) || 0),
+  format: String(settings.get("minimaxTtsFormat") || "mp3"),
+  sampleRate: Number(settings.get("minimaxTtsSampleRate")) || 32000,
+}));
+
+ipcMain.handle("minimax-tts:set-config", (_, cfg) => {
+  settings.set({
+    minimaxTtsEnabled: Boolean(cfg?.enabled),
+    minimaxTtsApiKey: String(cfg?.apiKey ?? "").trim(),
+    minimaxTtsVoiceId: String(cfg?.voiceId ?? "").trim(),
+    minimaxTtsModel: String(cfg?.model ?? "speech-2.8-hd").trim(),
+    minimaxTtsSpeed: Number(cfg?.speed ?? 1.0),
+    minimaxTtsVol: Number(cfg?.vol ?? 1.0),
+    minimaxTtsPitch: Math.round(Number(cfg?.pitch ?? 0)),
+    minimaxTtsFormat: String(cfg?.format ?? "mp3"),
+    minimaxTtsSampleRate: Number(cfg?.sampleRate ?? 32000),
+  });
+  return { ok: true };
+});
+
+ipcMain.handle("minimax-tts:close-settings", () => {
+  minimaxTtsSettingsWindow?.close();
+});
+
+// Synthesize a short test phrase so the Doctor can verify the configured
+// voice. The audio streams back to the window that invoked this (the settings
+// window) via minimax-tts:audio — the settings window has its own simple
+// playback hook. `payload.overrides` lets the settings window test the
+// currently-edited (not yet saved) values: they are applied to settings,
+// the test runs, then the previous values are restored.
+ipcMain.handle("minimax-tts:test", (event, payload) => {
+  const text = String(payload?.text || "博士，语音合成已经就绪。").trim();
+  const overrides = payload?.overrides || null;
+  let saved = null;
+  if (overrides && typeof overrides === "object") {
+    saved = settings.getAll();
+    settings.set({
+      minimaxTtsEnabled: true,
+      minimaxTtsApiKey: String(overrides.apiKey ?? saved.minimaxTtsApiKey ?? "").trim(),
+      minimaxTtsVoiceId: String(overrides.voiceId ?? saved.minimaxTtsVoiceId ?? "").trim(),
+      minimaxTtsModel: String(overrides.model ?? saved.minimaxTtsModel ?? "speech-2.8-hd").trim(),
+      minimaxTtsSpeed: Number(overrides.speed ?? saved.minimaxTtsSpeed ?? 1.0),
+      minimaxTtsVol: Number(overrides.vol ?? saved.minimaxTtsVol ?? 1.0),
+      minimaxTtsPitch: Math.round(Number(overrides.pitch ?? saved.minimaxTtsPitch ?? 0)),
+      minimaxTtsFormat: String(overrides.format ?? saved.minimaxTtsFormat ?? "mp3"),
+      minimaxTtsSampleRate: Number(overrides.sampleRate ?? saved.minimaxTtsSampleRate ?? 32000),
+    });
+  }
+  const result = ttsOneShotTest(text, event.sender?.getOwnerBrowserWindow?.());
+  // Restore after a short delay so the test task reads the overridden values
+  // before they revert (startTask reads settings synchronously on open, but
+  // the audio_setting/voice_setting in minimax-tts.js are read again on open).
+  if (saved) {
+    setTimeout(() => settings.set(saved), 800);
+  }
+  return result;
 });
 
 ipcMain.handle("desktop-pet:cat-mode-get", () => currentCatMode);

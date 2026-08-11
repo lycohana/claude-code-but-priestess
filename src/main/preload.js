@@ -54,6 +54,14 @@ contextBridge.exposeInMainWorld("creditsApi", {
   close: () => ipcRenderer.invoke("credits:close")
 });
 
+contextBridge.exposeInMainWorld("minimaxTtsApi", {
+  getConfig: () => ipcRenderer.invoke("minimax-tts:get-config"),
+  setConfig: (cfg) => ipcRenderer.invoke("minimax-tts:set-config", cfg),
+  closeSettings: () => ipcRenderer.invoke("minimax-tts:close-settings"),
+  test: (payload) => ipcRenderer.invoke("minimax-tts:test", payload),
+  onAudio: onChannel("minimax-tts:audio"),
+});
+
 contextBridge.exposeInMainWorld("updateApi", {
   getState: () => ipcRenderer.invoke("update:get-state"),
   onProgress: onChannel("update:progress")

@@ -88,7 +88,20 @@ const DEFAULTS = Object.freeze({
   popoverSize: { width: 380, height: 560 },
   // Freeform persona supplement written by the Doctor in-app. Appended after
   // the base persona as 【博士的补充校准】. Max ~1500 chars; empty = inactive.
-  personaNotes: ""
+  personaNotes: "",
+  // MiniMax TTS (Text-to-Speech) — streams Agent replies through the MiniMax
+  // T2A WebSocket API (wss://api.minimaxi.com/ws/v1/t2a_v2) so she can speak
+  // aloud. API key, voice, and model are configured in the tray-menu settings
+  // window; the key stays in local settings.json only.
+  minimaxTtsEnabled: false,
+  minimaxTtsApiKey: "",
+  minimaxTtsVoiceId: "moss_audio_ce44fc67-7ce3-11f0-8de5-96e35d26fb85",
+  minimaxTtsModel: "speech-2.8-hd",
+  minimaxTtsSpeed: 1.0,
+  minimaxTtsVol: 1.0,
+  minimaxTtsPitch: 0,
+  minimaxTtsFormat: "mp3",
+  minimaxTtsSampleRate: 32000
 });
 
 let cache = { ...DEFAULTS };

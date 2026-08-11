@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>语音合成设置</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1d2733;
+        --fg-dim: #5a6a7a;
+        --bg: #e9edf2;
+        --card: #ffffffb8;
+        --line: #c6cfd9;
+        --accent: #2e7d5b;
+        --accent-fg: #ffffff;
+        --danger: #b3473e;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #d7e3ec;
+          --fg-dim: #8aa0b2;
+          --bg: #11151a;
+          --card: #1a212b99;
+          --line: #2c3944;
+          --accent: #3fa97c;
+          --accent-fg: #0c1310;
+          --danger: #e07b72;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 18px 20px 16px;
+        font: 13px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        user-select: none;
+      }
+      h1 { font-size: 15px; margin: 0 0 4px; }
+      p.note {
+        margin: 0 0 14px;
+        color: var(--fg-dim);
+        font-size: 12px;
+      }
+      .field { margin-bottom: 12px; }
+      label.field-label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .hint { font-size: 11px; color: var(--fg-dim); margin-top: 3px; }
+      input[type="text"], input[type="password"], select {
+        width: 100%;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--fg);
+        font: inherit;
+        outline: none;
+      }
+      input:focus, select:focus { border-color: var(--accent); }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+        font-weight: 600;
+      }
+      .row { display: flex; gap: 8px; align-items: center; }
+      button {
+        padding: 7px 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--fg);
+        font: inherit;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-fg);
+        font-weight: 600;
+      }
+      button:disabled { opacity: 0.55; cursor: default; }
+      .actions {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .range-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .range-row input[type="range"] {
+        flex: 1;
+      }
+      .range-row .range-val {
+        min-width: 36px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .privacy {
+        margin-top: 12px;
+        padding: 8px 10px;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      #status {
+        font-size: 12px;
+        color: var(--fg-dim);
+        flex: 1;
+      }
+      #status.ok { color: var(--accent); }
+      #status.err { color: var(--danger); }
+      #status.busy { color: var(--fg-dim); }
+    </style>
+  </head>
+  <body>
+    <h1>语音合成 · MiniMax TTS</h1>
+    <p class="note">
+      通过 MiniMax T2A WebSocket API 将普瑞赛斯的回答实时合成为语音播放。
+      需要 <a href="https://platform.minimaxi.com/" target="_blank">MiniMax 平台</a> 的 API Key。
+    </p>
+
+    <div class="toggle-row">
+      <input type="checkbox" id="enabled" />
+      <label for="enabled">启用语音合成</label>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="apiKey">API Key</label>
+      <div class="row">
+        <input type="password" id="apiKey" placeholder="输入 MiniMax API Key…" spellcheck="false" />
+        <button type="button" id="toggleKey" title="显示 / 隐藏">👁</button>
+      </div>
+      <div class="hint">
+        🔒 API Key 仅保存在本机 settings.json，只发送给 MiniMax 服务器。任何人都无法读到它。
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="voiceId">音色 (Voice ID)</label>
+      <input type="text" id="voiceId" list="voiceList" placeholder="moss_audio_ce44fc67-7ce3-11f0-8de5-96e35d26fb85" spellcheck="false" />
+      <datalist id="voiceList">
+        <option value="moss_audio_ce44fc67-7ce3-11f0-8de5-96e35d26fb85" label="中文女声 · 温柔" />
+        <option value="Chinese (Mandarin)_Lyrical_Voice" label="中文女声 · 抒情" />
+        <option value="English_Graceful_Lady" label="英文女声 · 优雅" />
+        <option value="Japanese_Whisper_Belle" label="日文女声 · 轻语" />
+      </datalist>
+      <div class="hint">MiniMax 系统音色 ID，可在 MiniMax 控制台查看完整列表。</div>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="model">合成模型</label>
+      <select id="model">
+        <option value="speech-2.8-hd">speech-2.8-hd — 高保真（推荐）</option>
+        <option value="speech-2.8-turbo">speech-2.8-turbo — 快速</option>
+        <option value="speech-2.6-hd">speech-2.6-hd — 2.6 高保真</option>
+        <option value="speech-2.6-turbo">speech-2.6-turbo — 2.6 快速</option>
+      </select>
+      <div class="hint">HD 系列音质更好，Turbo 系列延迟更低。</div>
+    </div>
+
+    <div class="field">
+      <label class="field-label">语速</label>
+      <div class="range-row">
+        <input type="range" id="speed" min="0.5" max="2.0" step="0.1" value="1.0" />
+        <span class="range-val" id="speedVal">1.0</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="field-label">音量</label>
+      <div class="range-row">
+        <input type="range" id="vol" min="0.1" max="10" step="0.1" value="1.0" />
+        <span class="range-val" id="volVal">1.0</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="field-label">音调</label>
+      <div class="range-row">
+        <input type="range" id="pitch" min="-12" max="12" step="1" value="0" />
+        <span class="range-val" id="pitchVal">0</span>
+      </div>
+      <div class="hint">负值低沉，正值明亮。</div>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="format">音频格式</label>
+      <select id="format">
+        <option value="mp3">MP3（默认，兼容性好）</option>
+        <option value="pcm">PCM（原始音频，低延迟）</option>
+        <option value="wav">WAV</option>
+        <option value="flac">FLAC（无损）</option>
+        <option value="opus">Opus（低码率高质量）</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="sampleRate">采样率</label>
+      <select id="sampleRate">
+        <option value="8000">8000 Hz</option>
+        <option value="16000">16000 Hz</option>
+        <option value="22050">22050 Hz</option>
+        <option value="24000">24000 Hz</option>
+        <option value="32000">32000 Hz（默认）</option>
+        <option value="44100">44100 Hz</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <button type="button" id="testBtn">🎤 测试语音</button>
+      <div id="status"></div>
+    </div>
+
+    <div class="privacy">
+      隐私：以上配置只保存在本机数据目录的 settings.json 中。API Key 仅发送给 MiniMax 服务器，
+      不会上传或同步到任何其他地方。
+    </div>
+
+    <div class="actions">
+      <button type="button" id="cancelBtn">取消</button>
+      <button type="button" id="saveBtn" class="primary">保存</button>
+    </div>
+
+    <script src="./minimax-tts-settings.js"></script>
+  </body>
+</html>
