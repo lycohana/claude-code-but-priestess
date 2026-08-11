@@ -19,6 +19,69 @@ const toggleKeyBtn = document.getElementById("toggleKey");
 const testBtn = document.getElementById("testBtn");
 const statusEl = document.getElementById("status");
 
+// --- Pronunciation dictionary editor ----------------------------------
+// Each rule is { text, pronunciation }. Rendered as a list of rows with a
+// delete button; the two inputs above the list add a new rule.
+const pronListEl = document.getElementById("pronList");
+const pronTextEl = document.getElementById("pronText");
+const pronSpeakEl = document.getElementById("pronSpeak");
+const pronAddBtn = document.getElementById("pronAddBtn");
+let pronRules = [];
+
+function renderPronList() {
+  pronListEl.replaceChildren(
+    ...pronRules.map((rule, index) => {
+      const row = document.createElement("div");
+      row.className = "pron-item";
+
+      const from = document.createElement("code");
+      from.className = "pron-from";
+      from.textContent = rule.text;
+
+      const arrow = document.createElement("span");
+      arrow.textContent = "→";
+      arrow.style.color = "var(--fg-dim)";
+
+      const to = document.createElement("code");
+      to.className = "pron-to";
+      to.textContent = rule.pronunciation || "（原样）";
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "删除";
+      del.addEventListener("click", () => {
+        pronRules.splice(index, 1);
+        renderPronList();
+      });
+
+      row.append(from, arrow, to, del);
+      return row;
+    })
+  );
+}
+
+function addPronRule() {
+  const text = pronTextEl.value.trim();
+  const pronunciation = pronSpeakEl.value.trim();
+  if (!text) {
+    pronTextEl.focus();
+    return;
+  }
+  pronRules.push({ text, pronunciation });
+  pronTextEl.value = "";
+  pronSpeakEl.value = "";
+  renderPronList();
+  pronTextEl.focus();
+}
+
+pronAddBtn.addEventListener("click", addPronRule);
+pronSpeakEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    addPronRule();
+  }
+});
+
 function setStatus(text, kind) {
   statusEl.textContent = text || "";
   statusEl.className = kind || "";
@@ -97,6 +160,7 @@ testBtn.addEventListener("click", async () => {
         pitch: Number(pitchEl.value),
         format: formatEl.value,
         sampleRate: Number(sampleRateEl.value),
+        pronunciationDict: pronRules,
       },
     });
     if (result?.ok) {
@@ -137,6 +201,8 @@ window.minimaxTtsApi
     pitchVal.textContent = pitchEl.value;
     formatEl.value = cfg.format || "mp3";
     sampleRateEl.value = String(cfg.sampleRate) || "32000";
+    pronRules = Array.isArray(cfg.pronunciationDict) ? cfg.pronunciationDict : [];
+    renderPronList();
   })
   .catch(() => console.warn("minimax-tts-settings: failed to load config"));
 
@@ -157,6 +223,7 @@ saveBtn.addEventListener("click", async () => {
       pitch: Number(pitchEl.value),
       format: formatEl.value,
       sampleRate: Number(sampleRateEl.value),
+      pronunciationDict: pronRules,
     });
     setTimeout(() => window.minimaxTtsApi.closeSettings(), 200);
   } catch (error) {

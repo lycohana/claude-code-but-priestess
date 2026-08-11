@@ -101,7 +101,11 @@ const DEFAULTS = Object.freeze({
   minimaxTtsVol: 1.0,
   minimaxTtsPitch: 0,
   minimaxTtsFormat: "mp3",
-  minimaxTtsSampleRate: 32000
+  minimaxTtsSampleRate: 32000,
+  // Custom pronunciation rules for MiniMax TTS, as [{text, pronunciation}]
+  // pairs — "原文/替换内容". Each pair becomes a `pronunciation_dict.tone`
+  // entry ("text/(chu3)(li3)" etc). Empty = no custom rules.
+  minimaxTtsPronunciationDict: []
 });
 
 let cache = { ...DEFAULTS };

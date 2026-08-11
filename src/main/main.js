@@ -2476,9 +2476,26 @@ ipcMain.handle("minimax-tts:get-config", () => ({
   pitch: Math.round(Number(settings.get("minimaxTtsPitch")) || 0),
   format: String(settings.get("minimaxTtsFormat") || "mp3"),
   sampleRate: Number(settings.get("minimaxTtsSampleRate")) || 32000,
+  pronunciationDict: Array.isArray(settings.get("minimaxTtsPronunciationDict"))
+    ? settings.get("minimaxTtsPronunciationDict")
+    : [],
 }));
 
+// Normalize a pronunciation rule pair into a sanitised {text, pronunciation}
+// object. Drops entries whose text side is empty.
+function sanitizePronunciationPair(pair) {
+  const text = String(pair?.text ?? "").trim();
+  const pronunciation = String(pair?.pronunciation ?? "").trim();
+  if (!text) return null;
+  return { text, pronunciation };
+}
+
 ipcMain.handle("minimax-tts:set-config", (_, cfg) => {
+  const dict = Array.isArray(cfg?.pronunciationDict)
+    ? cfg.pronunciationDict
+        .map(sanitizePronunciationPair)
+        .filter(Boolean)
+    : [];
   settings.set({
     minimaxTtsEnabled: Boolean(cfg?.enabled),
     minimaxTtsApiKey: String(cfg?.apiKey ?? "").trim(),
@@ -2489,6 +2506,7 @@ ipcMain.handle("minimax-tts:set-config", (_, cfg) => {
     minimaxTtsPitch: Math.round(Number(cfg?.pitch ?? 0)),
     minimaxTtsFormat: String(cfg?.format ?? "mp3"),
     minimaxTtsSampleRate: Number(cfg?.sampleRate ?? 32000),
+    minimaxTtsPronunciationDict: dict,
   });
   return { ok: true };
 });
@@ -2519,6 +2537,9 @@ ipcMain.handle("minimax-tts:test", (event, payload) => {
       minimaxTtsPitch: Math.round(Number(overrides.pitch ?? saved.minimaxTtsPitch ?? 0)),
       minimaxTtsFormat: String(overrides.format ?? saved.minimaxTtsFormat ?? "mp3"),
       minimaxTtsSampleRate: Number(overrides.sampleRate ?? saved.minimaxTtsSampleRate ?? 32000),
+      minimaxTtsPronunciationDict: Array.isArray(overrides.pronunciationDict)
+        ? overrides.pronunciationDict.map(sanitizePronunciationPair).filter(Boolean)
+        : (saved.minimaxTtsPronunciationDict || []),
     });
   }
   const result = ttsOneShotTest(text, event.sender?.getOwnerBrowserWindow?.());

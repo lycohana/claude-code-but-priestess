@@ -53,6 +53,23 @@ function model() {
   return String(settings.get("minimaxTtsModel") || "speech-2.8-hd");
 }
 
+// Build the pronunciation_dict.tone array from the stored rules. Each stored
+// rule is { text, pronunciation }; the API wants `"text/(pronunciation)"`
+// strings. A rule whose pronunciation is empty is sent as plain text/text
+// (text-to-text substitution).
+function pronunciationDict() {
+  const rules = settings.get("minimaxTtsPronunciationDict");
+  if (!Array.isArray(rules) || rules.length === 0) return undefined;
+  const tone = [];
+  for (const rule of rules) {
+    const text = String(rule?.text ?? "").trim();
+    const pron = String(rule?.pronunciation ?? "").trim();
+    if (!text) continue;
+    tone.push(pron ? `${text}/${pron}` : `${text}/`);
+  }
+  return tone.length ? { tone } : undefined;
+}
+
 // ---- HTTP request ------------------------------------------------------
 
 /**
@@ -108,6 +125,7 @@ function startTask(callbacks) {
         stream: false,
         voice_setting: voiceSetting(),
         audio_setting: audioSetting(),
+        pronunciation_dict: pronunciationDict(),
         subtitle_enable: false,
       });
 

@@ -122,6 +122,42 @@
       #status.ok { color: var(--accent); }
       #status.err { color: var(--danger); }
       #status.busy { color: var(--fg-dim); }
+      .pron-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+      .pron-list:empty { margin-bottom: 0; }
+      .pron-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .pron-item code {
+        flex: 0 0 auto;
+        font: inherit;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--card);
+        color: var(--fg);
+      }
+      .pron-item .pron-from { flex: 1; }
+      .pron-item .pron-to { flex: 1.2; }
+      .pron-item button {
+        padding: 4px 9px;
+        font-size: 12px;
+      }
+      .pron-add-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .pron-add-row input { flex: 1; }
+      .pron-add-row input#pronSpeak { flex: 1.4; }
+      .pron-add-row button { white-space: nowrap; }
+      code { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px; }
     </style>
   </head>
   <body>
@@ -216,6 +252,19 @@
         <option value="32000">32000 Hz（默认）</option>
         <option value="44100">44100 Hz</option>
       </select>
+    </div>
+
+    <div class="field">
+      <label class="field-label">发音词典（自定义读音）</label>
+      <div class="hint" style="margin-bottom:8px;">
+        每条规则 = 【文字】+【口音】。口音可为拼音带声调 <code>(chu3)(li3)</code>、IPA <code>(rɪˈzjuːm)</code>、日文假名 <code>トウキョウ</code> 或纯文本展开。中文声调 1–5（5=轻声）。
+      </div>
+      <div id="pronList" class="pron-list"></div>
+      <div class="pron-add-row">
+        <input type="text" id="pronText" placeholder="原文，如：处理" spellcheck="false" />
+        <input type="text" id="pronSpeak" placeholder="口音，如：(chu3)(li3)" spellcheck="false" />
+        <button type="button" id="pronAddBtn">+ 添加</button>
+      </div>
     </div>
 
     <div class="row">
