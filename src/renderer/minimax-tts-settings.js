@@ -13,6 +13,7 @@ const pitchEl = document.getElementById("pitch");
 const pitchVal = document.getElementById("pitchVal");
 const formatEl = document.getElementById("format");
 const sampleRateEl = document.getElementById("sampleRate");
+const strategyEl = document.getElementById("strategy");
 const saveBtn = document.getElementById("saveBtn");
 const cancelBtn = document.getElementById("cancelBtn");
 const toggleKeyBtn = document.getElementById("toggleKey");
@@ -160,6 +161,7 @@ testBtn.addEventListener("click", async () => {
         pitch: Number(pitchEl.value),
         format: formatEl.value,
         sampleRate: Number(sampleRateEl.value),
+        strategy: strategyEl.value,
         pronunciationDict: pronRules,
       },
     });
@@ -201,6 +203,7 @@ window.minimaxTtsApi
     pitchVal.textContent = pitchEl.value;
     formatEl.value = cfg.format || "mp3";
     sampleRateEl.value = String(cfg.sampleRate) || "32000";
+    strategyEl.value = cfg.strategy || "firstSentence";
     pronRules = Array.isArray(cfg.pronunciationDict) ? cfg.pronunciationDict : [];
     renderPronList();
   })
@@ -223,6 +226,7 @@ saveBtn.addEventListener("click", async () => {
       pitch: Number(pitchEl.value),
       format: formatEl.value,
       sampleRate: Number(sampleRateEl.value),
+      strategy: strategyEl.value,
       pronunciationDict: pronRules,
     });
     setTimeout(() => window.minimaxTtsApi.closeSettings(), 200);

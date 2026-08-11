@@ -207,6 +207,18 @@
     </div>
 
     <div class="field">
+      <label class="field-label" for="strategy">播放策略</label>
+      <select id="strategy">
+        <option value="firstSentence">首句优先 — 第一句立即合成开播，剩余整段一次合成（推荐）</option>
+        <option value="whole">整段一次 — 回复结束后整段合成，情绪最连贯但稍慢</option>
+        <option value="perSentence">逐句流式 — 每句到了就合成，延迟最低但句间可能停顿</option>
+      </select>
+      <div class="hint">
+        影响语音何时开始播放。首句优先/逐句更快；整段一次更连贯。
+      </div>
+    </div>
+
+    <div class="field">
       <label class="field-label">语速</label>
       <div class="range-row">
         <input type="range" id="speed" min="0.5" max="2.0" step="0.1" value="1.0" />

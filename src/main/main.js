@@ -154,9 +154,8 @@ function ttsSpeak(text) {
 }
 
 // Speak ONLY the first complete sentence in the buffer, the moment it has
-// closed on a sentence boundary. This gives low first-word latency; the rest
-// of the reply is synthesized as one clip at turn-idle (gap-free). Anything
-// before/at the first boundary is consumed; the remainder stays buffered.
+// closed on a sentence boundary. Used by the "firstSentence" strategy for
+// low first-word latency; the rest is synthesized as one clip at turn-idle.
 function ttsSpeakFirstSentence() {
   if (ttsFirstSpoken || !ttsBuffer) return;
   const boundaryIdx = ttsBuffer.search(/[。！？.!?\n]/);
@@ -165,6 +164,41 @@ function ttsSpeakFirstSentence() {
   ttsBuffer = ttsBuffer.slice(boundaryIdx + 1);
   ttsFirstSpoken = true;
   ttsSpeak(first);
+}
+
+// Speak EVERY complete sentence currently in the buffer, leaving any partial
+// trailing sentence for the next chunk / turn-idle. Used by the "perSentence"
+// strategy for the lowest streaming latency.
+function ttsDrainAllSentences() {
+  if (!ttsBuffer) return;
+  let searchFrom = 0;
+  while (true) {
+    const rel = ttsBuffer.slice(searchFrom).search(/[。！？.!?\n]/);
+    if (rel === -1) break;
+    const boundaryIdx = searchFrom + rel;
+    const sentence = ttsBuffer.slice(searchFrom, boundaryIdx + 1);
+    ttsSpeak(sentence);
+    searchFrom = boundaryIdx + 1;
+    ttsFirstSpoken = true;
+  }
+  ttsBuffer = ttsBuffer.slice(searchFrom);
+}
+
+function ttsStrategy() {
+  const s = String(settings.get("minimaxTtsStrategy") || "firstSentence");
+  return s === "whole" || s === "perSentence" ? s : "firstSentence";
+}
+
+// Called on each streaming chunk: dispatch to the active strategy.
+function ttsOnChunk() {
+  if (!minimaxTts.enabled()) return;
+  const strategy = ttsStrategy();
+  if (strategy === "whole") return; // accumulate only; speak at idle
+  if (strategy === "perSentence") {
+    ttsDrainAllSentences();
+    return;
+  }
+  ttsSpeakFirstSentence(); // firstSentence (default)
 }
 
 // One-shot TTS synthesis for the settings-window "test" button. Pushes the
@@ -2268,8 +2302,10 @@ if (!gotSingleInstanceLock) {
           // Output stopped — now begin the idle countdown from this moment.
           chatTurnRunning = false;
           scheduleDesktopPet();
-          // The first sentence was already spoken eagerly; synthesize the
-          // rest of the reply as one gap-free clip now that it's complete.
+          // Synthesize whatever text remains in the buffer. Depending on the
+          // strategy this is: the whole reply (whole), the rest after the
+          // first sentence (firstSentence), or the last partial sentence
+          // (perSentence). All strategies end the turn here.
           if (minimaxTts.enabled() && ttsBuffer.trim()) {
             ttsSpeak(ttsBuffer.trim());
             ttsBuffer = "";
@@ -2293,12 +2329,12 @@ if (!gotSingleInstanceLock) {
         messageId: event.messageId,
         text: event.text
       });
-      // Accumulate the Agent's reply text. The FIRST complete sentence is
-      // spoken eagerly (low first-word latency); the rest is synthesized as
-      // one gap-free clip at turn-idle.
+      // Accumulate the Agent's reply text and dispatch to the active
+      // synthesis strategy (whole / firstSentence / perSentence). The whole
+      // strategy only accumulates here and speaks at turn-idle.
       if (event.text) {
         ttsBuffer += event.text;
-        if (minimaxTts.enabled()) ttsSpeakFirstSentence();
+        ttsOnChunk();
       }
     } else if (event.kind === "status") {
       popover.webContents.send("chat:status", event);
@@ -2494,6 +2530,7 @@ ipcMain.handle("minimax-tts:get-config", () => ({
   pitch: Math.round(Number(settings.get("minimaxTtsPitch")) || 0),
   format: String(settings.get("minimaxTtsFormat") || "mp3"),
   sampleRate: Number(settings.get("minimaxTtsSampleRate")) || 32000,
+  strategy: String(settings.get("minimaxTtsStrategy") || "firstSentence"),
   pronunciationDict: Array.isArray(settings.get("minimaxTtsPronunciationDict"))
     ? settings.get("minimaxTtsPronunciationDict")
     : [],
@@ -2524,6 +2561,7 @@ ipcMain.handle("minimax-tts:set-config", (_, cfg) => {
     minimaxTtsPitch: Math.round(Number(cfg?.pitch ?? 0)),
     minimaxTtsFormat: String(cfg?.format ?? "mp3"),
     minimaxTtsSampleRate: Number(cfg?.sampleRate ?? 32000),
+    minimaxTtsStrategy: String(cfg?.strategy ?? "firstSentence"),
     minimaxTtsPronunciationDict: dict,
   });
   return { ok: true };
@@ -2555,6 +2593,7 @@ ipcMain.handle("minimax-tts:test", (event, payload) => {
       minimaxTtsPitch: Math.round(Number(overrides.pitch ?? saved.minimaxTtsPitch ?? 0)),
       minimaxTtsFormat: String(overrides.format ?? saved.minimaxTtsFormat ?? "mp3"),
       minimaxTtsSampleRate: Number(overrides.sampleRate ?? saved.minimaxTtsSampleRate ?? 32000),
+      minimaxTtsStrategy: String(overrides.strategy ?? saved.minimaxTtsStrategy ?? "firstSentence"),
       minimaxTtsPronunciationDict: Array.isArray(overrides.pronunciationDict)
         ? overrides.pronunciationDict.map(sanitizePronunciationPair).filter(Boolean)
         : (saved.minimaxTtsPronunciationDict || []),

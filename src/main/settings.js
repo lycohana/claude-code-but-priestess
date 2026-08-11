@@ -102,6 +102,14 @@ const DEFAULTS = Object.freeze({
   minimaxTtsPitch: 0,
   minimaxTtsFormat: "mp3",
   minimaxTtsSampleRate: 32000,
+  // When to synthesize Agent replies:
+  //   "firstSentence" — speak the first sentence eagerly, the rest as one
+  //                     clip at turn-idle (balanced: quick start, gap-free tail)
+  //   "whole"         — synthesize the entire reply as one clip at turn-idle
+  //                     (slowest start, most consistent emotion/continuity)
+  //   "perSentence"   — synthesize each sentence as it streams in (lowest
+  //                     latency, but sentence-edge pauses)
+  minimaxTtsStrategy: "firstSentence",
   // Custom pronunciation rules for MiniMax TTS, as [{text, pronunciation}]
   // pairs — "原文/替换内容". Each pair becomes a `pronunciation_dict.tone`
   // entry ("text/(chu3)(li3)" etc). Empty = no custom rules.
@@ -163,6 +171,7 @@ const VALIDATORS = {
   menuLanguage: (v) => ["system", "zh", "en"].includes(v),
   outfit: (v) => ["formal", "casual"].includes(v),
   updateChannel: (v) => ["stable", "prerelease"].includes(v),
+  minimaxTtsStrategy: (v) => ["firstSentence", "whole", "perSentence"].includes(v),
   desktopPetSize: () => false // deprecated, reject
 };
 
