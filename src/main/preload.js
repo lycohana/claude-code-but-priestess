@@ -26,7 +26,8 @@ contextBridge.exposeInMainWorld("petApi", {
   onOpened: onChannel("popover:opened"),
   onSettings: onChannel("settings:state"),
   getCatMode: () => ipcRenderer.invoke("desktop-pet:cat-mode-get"),
-  onCatMode: onChannel("desktop-pet:cat-mode")
+  onCatMode: onChannel("desktop-pet:cat-mode"),
+  onShown: onChannel("desktop-pet:shown")
 });
 
 contextBridge.exposeInMainWorld("previewApi", {

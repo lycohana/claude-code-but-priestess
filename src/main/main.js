@@ -1,7 +1,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
-const { spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const {
   app,
   BrowserWindow,
@@ -101,6 +101,10 @@ let pendingDesktopPetScalePosition = null;
 let desktopPetScaleAnchor = null;
 let desktopPetScaleLastAt = 0;
 let windowFadeTimer = null;
+// Pet fade-out has its own timer: it runs while the popover fade-in may also
+// be starting (pet → chat handoff), and fadeWindow's single global timer
+// would cancel one of the two.
+let petFadeTimer = null;
 let priestessSettingsWindow = null;
 let personaNotesWindow = null;
 let creditsWindow = null;
@@ -592,7 +596,7 @@ function clampNumber(value, min, max) {
 }
 
 function clampPopoverSize(size = {}, display = screen.getPrimaryDisplay()) {
-  const work = display.workArea;
+  const work = effectiveWorkArea(display);
   const effectiveMinWidth = htmlPanelOpen
     ? POPOVER_MIN_WIDTH + HTML_PANEL_MIN_WIDTH
     : POPOVER_MIN_WIDTH;
@@ -638,7 +642,7 @@ function resizePopoverDrag({ edge = "se", start = {}, dx = 0, dy = 0 } = {}) {
   if (![sx, sy, sw, sh].every(Number.isFinite)) return null;
 
   const display = screen.getDisplayMatching(popover.getBounds());
-  const work = display.workArea;
+  const work = effectiveWorkArea(display);
   const e = String(edge);
   const right = sx + sw;
   const bottom = sy + sh;
@@ -691,7 +695,7 @@ function movePopoverTo(point = {}) {
     x: Math.round(targetX),
     y: Math.round(targetY)
   });
-  const work = display.workArea;
+  const work = effectiveWorkArea(display);
   const x = clampNumber(targetX, work.x, work.x + work.width - width);
   const y = clampNumber(targetY, work.y, work.y + work.height - height);
   if (process.platform === 'win32') {
@@ -791,17 +795,19 @@ function createPopover() {
   hardenWebContents(popover.webContents);
   popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // Sit in the normal window stacking order — other apps can come over the
-  // top. On macOS, another app taking focus means the popover is covered:
-  // collapse to the desktop pet (Windows uses rect polling instead — see
-  // windowZCareTick — because focus and occlusion don't line up there).
+  // top. Focus loss is the collapse trigger on ALL platforms: when the Doctor
+  // clicks any other window the chat collapses to the desktop pet. Guards:
+  // dragging the popover never collapses (the drag briefly refocuses), and
+  // our own settings dialogs holding focus are exempt.
   popover.on("blur", () => {
-    if (process.platform !== "darwin") return;
+    if (isMovingPopover) return;
     if (!settings.get("desktopPet") || wsServer.isVscodeActive()) return;
     setTimeout(() => {
       if (!popover || popover.isDestroyed() || !popover.isVisible()) return;
+      if (isMovingPopover) return;
       if (popover.isFocused() || anyAppWindowFocused()) return;
       collapsePopoverToDesktopPet();
-    }, 300);
+    }, 200);
   });
 
   popover.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
@@ -847,7 +853,7 @@ function positionPopover() {
   if (!popover || !tray) return;
   const trayBounds = tray.getBounds();
   const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y });
-  const work = display.workArea;
+  const work = effectiveWorkArea(display);
   const winBounds = popover.getBounds();
   // Center the popover beside the tray icon. Windows commonly puts the tray
   // at the bottom of the screen, while macOS puts it at the top.
@@ -876,7 +882,7 @@ function togglePopover() {
 //  Desktop pet — appears after the chat stays hidden for a while.
 // ============================================================
 function defaultDesktopPetPosition(display = screen.getPrimaryDisplay()) {
-  const work = display.workArea;
+  const work = effectiveWorkArea(display);
   const size = desktopPetSize();
   return {
     x: work.x + work.width - size.width - 24,
@@ -908,7 +914,7 @@ function clampDesktopPetPosition(point = {}) {
   const display = valid
     ? screen.getDisplayNearestPoint({ x: Math.round(target.x), y: Math.round(target.y) })
     : screen.getPrimaryDisplay();
-  const work = display.workArea;
+  const work = effectiveWorkArea(display);
   const fallback = defaultDesktopPetPosition(display);
   const size = desktopPetSize();
   return {
@@ -960,7 +966,41 @@ function createDesktopPet() {
 function hideDesktopPet() {
   clearTimeout(desktopPetTimer);
   desktopPetTimer = null;
+  clearInterval(petFadeTimer);
+  petFadeTimer = null;
+  if (desktopPet && !desktopPet.isDestroyed()) desktopPet.setOpacity(1);
   desktopPet?.hide();
+}
+
+// Fade the pet window out (its own timer, so the popover fade-in can start
+// simultaneously) then hide it. Used by the pet → chat handoff so the pet
+// doesn't just blink out.
+function fadeDesktopPetOut(durationMs, onDone) {
+  const pet = desktopPet;
+  if (!pet || pet.isDestroyed() || !pet.isVisible()) {
+    onDone?.();
+    return;
+  }
+  clearInterval(petFadeTimer);
+  petFadeTimer = null;
+  const startedAt = Date.now();
+  const from = pet.getOpacity();
+  petFadeTimer = setInterval(() => {
+    if (!desktopPet || desktopPet.isDestroyed()) {
+      clearInterval(petFadeTimer);
+      petFadeTimer = null;
+      onDone?.();
+      return;
+    }
+    const progress = Math.min(1, (Date.now() - startedAt) / durationMs);
+    desktopPet.setOpacity(from * (1 - progress));
+    if (progress < 1) return;
+    clearInterval(petFadeTimer);
+    petFadeTimer = null;
+    desktopPet.hide();
+    desktopPet.setOpacity(1);
+    onDone?.();
+  }, 16);
 }
 
 function clearWindowFade() {
@@ -997,6 +1037,7 @@ function showDesktopPet() {
   pet.setAlwaysOnTop(!fullscreenAppActive);
   maybeSendCatMode(pet);
   pet.showInactive();
+  pet.webContents.send("desktop-pet:shown");
 }
 
 function scheduleDesktopPet() {
@@ -1075,12 +1116,16 @@ function openChatFromDesktopPet() {
   popoverExpectedSize = { width: restoredSize.width, height: restoredSize.height };
   popover.setSize(restoredSize.width, restoredSize.height, false);
   const petBounds = desktopPet?.getBounds();
-  hideDesktopPet();
+  // Fade the pet out instead of an instant blink — the popover pops in while
+  // she fades, so the handoff reads as one continuous motion.
+  clearTimeout(desktopPetTimer);
+  desktopPetTimer = null;
+  fadeDesktopPetOut(150);
   try {
     if (petBounds) {
       const bounds = popover.getBounds();
       const display = screen.getDisplayMatching(petBounds);
-      const work = display.workArea;
+      const work = effectiveWorkArea(display);
       const x = clampNumber(
         petBounds.x + Math.round((petBounds.width - bounds.width) / 2),
         work.x + 4,
@@ -1116,7 +1161,7 @@ function showPopover() {
   clearWindowFade();
   const bounds = popover.getBounds();
   const display = screen.getDisplayMatching(bounds);
-  const work = display.workArea;
+  const work = effectiveWorkArea(display);
   const size = clampPopoverSize(popoverExpectedSize || bounds, display);
   popoverExpectedSize = { width: size.width, height: size.height };
   popover.setBounds({
@@ -1124,15 +1169,16 @@ function showPopover() {
     y: clampNumber(bounds.y, work.y + 4, work.y + work.height - size.height - 4),
     ...size
   }, false);
-  const fadeIn = process.platform !== "win32";
-  popover.setOpacity(fadeIn ? 0 : 1);
+  // Fade the popover in on every platform — the collapse already fades out on
+  // Windows, so opacity animation works fine both ways there.
+  popover.setOpacity(0);
   popover.show();
   popover.focus();
   popover.webContents.send("popover:opened");
   // Don't schedule the pet timer while VS Code has her attention — the Doctor
   // will return to VS Code, and an idle-timer pet pop-in would be a distraction.
   if (!wsServer.isVscodeActive()) scheduleDesktopPet();
-  if (fadeIn) fadeWindow(popover, 0, 1, 180);
+  fadeWindow(popover, 0, 1, 180);
 }
 
 function collapsePopoverToDesktopPet() {
@@ -1154,6 +1200,7 @@ function collapsePopoverToDesktopPet() {
     const pet = createDesktopPet();
     maybeSendCatMode(pet);
     pet.showInactive();
+    pet.webContents.send("desktop-pet:shown");
     return;
   }
   // She returns to where she stood before the chat opened (her saved spot) —
@@ -1166,6 +1213,7 @@ function collapsePopoverToDesktopPet() {
     popover.setOpacity(1);
     maybeSendCatMode(pet);
     pet.showInactive();
+    pet.webContents.send("desktop-pet:shown");
   });
 }
 
@@ -1177,7 +1225,7 @@ function openHtmlPanel(width) {
   const panelWidth = Math.max(HTML_PANEL_MIN_WIDTH, Number.isFinite(width) ? width : HTML_PANEL_MIN_WIDTH);
   const bounds = popover.getBounds();
   const display = screen.getDisplayMatching(bounds);
-  const work = display.workArea;
+  const work = effectiveWorkArea(display);
   const newWidth = Math.min(bounds.width + panelWidth, work.width - POPOVER_EDGE_MARGIN);
   if (newWidth <= bounds.width) return;
   let newX = bounds.x;
@@ -1214,8 +1262,13 @@ function closeHtmlPanel() {
 //  macOS: blur on the popover means another app took over.
 // ============================================================
 const FG_POLL_MS = 1200;
-const COVERAGE_COLLAPSE_RATIO = 0.5;
-const COLLAPSE_DEBOUNCE_MS = 3000;
+// PowerShell's startup cost is ~100-200ms. spawnSync BLOCKS the main process
+// for that long on every tick, which stutters live window drags. Use the
+// async spawn and cache the last result — a stale foreground rect (up to one
+// poll behind) is far better than a periodic UI hitch.
+const FG_PROBE_TIMEOUT_MS = 2000;
+let fgProbeInFlight = false;
+let lastForegroundRect = null;
 
 const FG_PROBE_SCRIPT = [
   "$src='using System;using System.Runtime.InteropServices;",
@@ -1233,27 +1286,52 @@ const FG_PROBE_SCRIPT = [
 ].join(" ");
 
 // Foreground window's rect + owning pid, or null when unavailable.
-function foregroundWindowInfo() {
-  if (process.platform !== "win32") return null;
-  try {
-    const result = spawnSync(
-      "powershell",
-      ["-NoProfile", "-NonInteractive", "-Command", FG_PROBE_SCRIPT],
-      { encoding: "utf8", timeout: 2000, windowsHide: true }
-    );
-    const out = String(result.stdout || "").trim();
-    const match = out.match(/(-?\d+),(-?\d+),(-?\d+),(-?\d+),(\d+)/);
-    if (!match) return null;
-    return {
-      left: Number(match[1]),
-      top: Number(match[2]),
-      right: Number(match[3]),
-      bottom: Number(match[4]),
-      pid: Number(match[5])
-    };
-  } catch {
-    return null;
+// ASYNC: spawnSync's ~100-200ms PowerShell startup blocks the main process
+// and makes window dragging stutter. We launch the probe in the background,
+// cache the last result, and serve the (slightly stale) cached rect instead.
+function foregroundWindowInfo(callback) {
+  if (process.platform !== "win32") {
+    callback(null);
+    return;
   }
+  if (fgProbeInFlight) {
+    callback(lastForegroundRect);
+    return;
+  }
+  fgProbeInFlight = true;
+  let stdout = "";
+  const proc = spawn(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-Command", FG_PROBE_SCRIPT],
+    { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
+  );
+  const timer = setTimeout(() => {
+    try { proc.kill(); } catch { /* ignore */ }
+  }, FG_PROBE_TIMEOUT_MS);
+  proc.stdout.on("data", (chunk) => {
+    if (stdout.length < 512) stdout += chunk.toString("utf8");
+  });
+  proc.on("error", () => {
+    clearTimeout(timer);
+    fgProbeInFlight = false;
+    callback(lastForegroundRect);
+  });
+  proc.on("close", () => {
+    clearTimeout(timer);
+    fgProbeInFlight = false;
+    const out = stdout.trim();
+    const match = out.match(/(-?\d+),(-?\d+),(-?\d+),(-?\d+),(\d+)/);
+    if (match) {
+      lastForegroundRect = {
+        left: Number(match[1]),
+        top: Number(match[2]),
+        right: Number(match[3]),
+        bottom: Number(match[4]),
+        pid: Number(match[5])
+      };
+    }
+    callback(lastForegroundRect);
+  });
 }
 
 // Does the rect essentially fill a whole display (a fullscreen app)?
@@ -1269,25 +1347,11 @@ function rectIsFullscreen(rect) {
   return false;
 }
 
-// Fraction of `target` covered by `rect` (0..1).
-function rectOverlapRatio(rect, target) {
-  if (!rect || !target) return 0;
-  const ix = Math.max(
-    0,
-    Math.min(rect.right, target.x + target.width) - Math.max(rect.left, target.x)
-  );
-  const iy = Math.max(
-    0,
-    Math.min(rect.bottom, target.y + target.height) - Math.max(rect.top, target.y)
-  );
-  const intersection = ix * iy;
-  if (intersection <= 0) return 0;
-  return intersection / (target.width * target.height);
-}
+// Fraction of `target` covered by `rect` (0..1). Unused since the collapse
+// moved to the blur handler — kept out; see windowZCareTick.
 
 let fullscreenAppActive = false;
 let fgPollTimer = null;
-let lastCoverageCollapseAt = 0;
 
 function applyFullscreenState(fullscreen) {
   if (fullscreenAppActive === fullscreen) return;
@@ -1295,9 +1359,6 @@ function applyFullscreenState(fullscreen) {
   if (desktopPet && !desktopPet.isDestroyed()) {
     desktopPet.setAlwaysOnTop(!fullscreen);
   }
-  console.info(
-    `main: fullscreen app ${fullscreen ? "entered" : "left"} — pet alwaysOnTop=${!fullscreen}`
-  );
 }
 
 // True when one of our own secondary windows has focus (so covering the
@@ -1320,32 +1381,181 @@ function windowZCareTick() {
   const popoverVisible = popover && !popover.isDestroyed() && popover.isVisible();
   if (!petVisible && !popoverVisible) return;
 
-  const fg = foregroundWindowInfo();
-  if (!fg) return;
-
-  applyFullscreenState(rectIsFullscreen(fg));
-
-  // Covered → pet. Our own windows and VS Code attention are exempt.
-  if (
-    popoverVisible &&
-    settings.get("desktopPet") &&
-    !wsServer.isVscodeActive() &&
-    fg.pid !== process.pid
-  ) {
-    const ratio = rectOverlapRatio(fg, popover.getBounds());
-    if (ratio > COVERAGE_COLLAPSE_RATIO) {
-      const now = Date.now();
-      if (now - lastCoverageCollapseAt > COLLAPSE_DEBOUNCE_MS) {
-        lastCoverageCollapseAt = now;
-        collapsePopoverToDesktopPet();
-      }
-    }
-  }
+  // The foreground probe is async; do the fullscreen decision in its
+  // callback so we never block the main process (which is what stuttered
+  // drags). The "covered → collapse" behavior lives in the popover's blur
+  // handler instead — rect overlap only catches fullscreen windows, which
+  // is why the Doctor saw the chat collapse for the desktop but not for
+  // other apps.
+  foregroundWindowInfo((fg) => {
+    if (!fg) return;
+    applyFullscreenState(rectIsFullscreen(fg));
+  });
 }
 
 function startWindowZCare() {
   if (fgPollTimer) return;
   fgPollTimer = setInterval(windowZCareTick, FG_POLL_MS);
+}
+
+// ============================================================
+//  Taskbar-aware work area
+//  With an auto-hide taskbar, display.workArea reports the FULL
+//  screen (the taskbar occupies no space while hidden), so windows
+//  clamp to the very bottom and the taskbar slides out over them.
+//  ABM_GETTASKBARPOS still returns the taskbar's reserved strip in
+//  that state — subtract it from the work area so the popover and
+//  the pet stay above (or beside) the taskbar.
+// ============================================================
+const TASKBAR_PROBE_SCRIPT = [
+  "$src='using System;using System.Runtime.InteropServices;public class U{[DllImport(\"user32.dll\")]public static extern bool SetProcessDPIAware();}';",
+  "Add-Type $src -ErrorAction SilentlyContinue;",
+  "[U]::SetProcessDPIAware()|Out-Null;",
+  "Add-Type -AssemblyName System.Windows.Forms;",
+  "$src2='using System;using System.Text;using System.Runtime.InteropServices;",
+  "public struct RECT{public int Left,Top,Right,Bottom;}",
+  "public delegate bool EnumWindowsProc(IntPtr hWnd,IntPtr lParam);",
+  "public class W{[DllImport(\"user32.dll\")]public static extern bool EnumWindows(EnumWindowsProc cb,IntPtr lp);",
+  "[DllImport(\"user32.dll\")]public static extern int GetClassName(IntPtr h,StringBuilder b,int n);",
+  "[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out RECT r);}';",
+  "Add-Type $src2 -ErrorAction SilentlyContinue;",
+  "$screens=@([System.Windows.Forms.Screen]::AllScreens);",
+  "$tbs=New-Object System.Collections.ArrayList;",
+  "$cb=[EnumWindowsProc]{param($h,$l)$b=New-Object System.Text.StringBuilder 256;[W]::GetClassName($h,$b,256)|Out-Null;",
+  "$c=$b.ToString();",
+  "if($c -eq 'Shell_TrayWnd' -or $c -eq 'Shell_SecondaryTrayWnd'){$r=New-Object RECT;[W]::GetWindowRect($h,[ref]$r)|Out-Null;",
+  "[void]$tbs.Add((\"{0},{1},{2},{3}\" -f $r.Left,$r.Top,$r.Right,$r.Bottom))};$true};",
+  "[W]::EnumWindows($cb,[IntPtr]::Zero)|Out-Null;",
+  "$out=@();",
+  "foreach($tb in $tbs){$p=$tb -split ',';$l=[int]$p[0];$t=[int]$p[1];$rr=[int]$p[2];$b=[int]$p[3];",
+  "$best=$null;$bestOv=-1;",
+  "foreach($s in $screens){$sx=$s.Bounds.X;$sw=$s.Bounds.Width;$ov=[Math]::Min($rr,$sx+$sw)-[Math]::Max($l,$sx);if($ov -gt $bestOv){$bestOv=$ov;$best=$s}};",
+  "if($best){$w=$best.Bounds.Width;$h=$best.Bounds.Height;$cx=($l+$rr)/2;$cy=($t+$b)/2;$sx=$best.Bounds.X;$sy=$best.Bounds.Y;",
+  "$edge=3;$th=($b-$t);if(($rr-$l) -lt $th){$th=($rr-$l);$edge=2;if($cx -lt ($sx+$w/2)){$edge=0}}elseif($cy -lt ($sy+$h/2)){$edge=1};",
+  "$out+=(\"{0},{1},{2},{3}\" -f $w,$h,$edge,$th)}};",
+  "Write-Output ($out -join ';')"
+].join(" ");
+
+// Per-display taskbar strips, keyed by the display's PHYSICAL size
+// ("WxH" from the probe) → { edge, thicknessDIP }. Multiple strips (one per
+// monitor with its own taskbar) replace the old single primary-only rect.
+let taskbarStrips = new Map(); // physicalSizeKey -> { edge, thickness }
+let taskbarProbeInFlight = false;
+
+function probeTaskbarRect(callback) {
+  if (process.platform !== "win32") {
+    callback?.(taskbarStrips);
+    return;
+  }
+  if (taskbarProbeInFlight) {
+    callback?.(taskbarStrips);
+    return;
+  }
+  taskbarProbeInFlight = true;
+  let stdout = "";
+  const proc = spawn(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-Command", TASKBAR_PROBE_SCRIPT],
+    { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
+  );
+  const timer = setTimeout(() => {
+    try { proc.kill(); } catch { /* ignore */ }
+  }, 2500);
+  proc.stdout.on("data", (chunk) => {
+    if (stdout.length < 1024) stdout += chunk.toString("utf8");
+  });
+  proc.on("error", () => {
+    clearTimeout(timer);
+    taskbarProbeInFlight = false;
+    callback?.(taskbarStrips);
+  });
+  proc.on("close", () => {
+    clearTimeout(timer);
+    taskbarProbeInFlight = false;
+    const strips = new Map();
+    for (const part of stdout.trim().split(";")) {
+      const match = part.match(/(\d+),(\d+),(\d+),(\d+)/);
+      if (!match) continue;
+      const physW = Number(match[1]);
+      const physH = Number(match[2]);
+      const edge = Number(match[3]);
+      const thicknessPhys = Number(match[4]);
+      if (physW <= 0 || physH <= 0 || thicknessPhys <= 0) continue;
+      // Map the physical strip to the display with the same physical size,
+      // then store its thickness in DIP.
+      const display = screen
+        .getAllDisplays()
+        .find((d) => {
+          const s = d.scaleFactor || 1;
+          return (
+            Math.abs(Math.round(d.bounds.width * s) - physW) < 8 &&
+            Math.abs(Math.round(d.bounds.height * s) - physH) < 8
+          );
+        });
+      if (!display) continue;
+      strips.set(`${physW}x${physH}`, {
+        edge,
+        thickness: thicknessPhys / (display.scaleFactor || 1)
+      });
+    }
+    if (strips.size > 0) taskbarStrips = strips;
+    callback?.(taskbarStrips);
+  });
+}
+
+let taskbarProbeTimer = null;
+
+function startTaskbarProbe() {
+  if (taskbarProbeTimer) return;
+  probeTaskbarRect();
+  // Taskbar position / auto-hide changes fire no OS event Electron sees —
+  // refresh periodically so a changed setup is picked up within a minute.
+  taskbarProbeTimer = setInterval(probeTaskbarRect, 30_000);
+}
+
+// display.workArea, minus that display's taskbar strip when the work area
+// extends into it (i.e. auto-hide: Windows reports the full screen). A
+// visible taskbar already shrinks workArea, so nothing gets double-subtracted.
+// Strips are per-display (secondary monitors have their own taskbar in
+// Windows 11); matched by physical size.
+function effectiveWorkArea(display) {
+  const work = { ...display.workArea };
+  const strip = taskbarStrips.get(
+    `${Math.round(display.bounds.width * (display.scaleFactor || 1))}x${Math.round(display.bounds.height * (display.scaleFactor || 1))}`
+  );
+  if (!strip) return work;
+  const b = display.bounds;
+  const thickness = strip.thickness;
+  if (strip.edge === 3) {
+    // Bottom taskbar: shrink the bottom of the work area to just above it.
+    const stripTop = b.y + b.height - thickness;
+    if (stripTop > work.y && stripTop < work.y + work.height) {
+      work.height = stripTop - work.y;
+    }
+  } else if (strip.edge === 1) {
+    // Top taskbar.
+    const stripBottom = b.y + thickness;
+    if (stripBottom > work.y && stripBottom < work.y + work.height) {
+      const bottom = work.y + work.height;
+      work.y = stripBottom;
+      work.height = bottom - work.y;
+    }
+  } else if (strip.edge === 0) {
+    // Left taskbar.
+    const stripRight = b.x + thickness;
+    if (stripRight > work.x && stripRight < work.x + work.width) {
+      const right = work.x + work.width;
+      work.x = stripRight;
+      work.width = right - work.x;
+    }
+  } else if (strip.edge === 2) {
+    // Right taskbar.
+    const stripLeft = b.x + b.width - thickness;
+    if (stripLeft > work.x && stripLeft < work.x + work.width) {
+      work.width = stripLeft - work.x;
+    }
+  }
+  return work;
 }
 
 // ============================================================
@@ -2603,6 +2813,12 @@ if (!gotSingleInstanceLock) {
   createPopover();
   scheduleDesktopPet();
   startWindowZCare();
+  startTaskbarProbe();
+  // Taskbar geometry (position / auto-hide) changes with OS settings, not
+  // display resolution — re-probe on any display change too, for free.
+  screen.on("display-metrics-changed", () => probeTaskbarRect());
+  screen.on("display-added", () => probeTaskbarRect());
+  screen.on("display-removed", () => probeTaskbarRect());
 });
 
 app.on("window-all-closed", () => {

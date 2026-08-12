@@ -2317,6 +2317,10 @@ window.petApi?.onOpened?.(() => {
   if (baseMood === "sleep" || baseMood === "cry") {
     setBaseMood("idle");
   }
+  // Pop-in animation each time the window opens (pet handoff, tray click).
+  document.body.classList.remove("popover-pop-in");
+  void document.body.offsetWidth; // reflow → restart the CSS animation
+  document.body.classList.add("popover-pop-in");
 });
 
 let activitySignalTimer = null;

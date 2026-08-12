@@ -1123,3 +1123,16 @@ body.file-dragging::after {
   background: var(--border);
   opacity: 0.6;
 }
+
+/* ============================================================
+   Popover pop-in — grows out of the pet/tray anchor when opened.
+   ============================================================ */
+@keyframes prts-popover-pop-in {
+  0% { transform: scale(0.96) translateY(8px); }
+  100% { transform: scale(1) translateY(0); }
+}
+
+body.popover-pop-in {
+  animation: prts-popover-pop-in 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: top center;
+}

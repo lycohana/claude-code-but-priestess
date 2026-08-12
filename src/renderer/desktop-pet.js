@@ -380,6 +380,15 @@ window.petApi?.onSettings?.((payload) => {
 
 window.petApi?.onCatMode?.(applyCatMode);
 
+// Play the pop-in landing animation each time main shows this window (idle
+// appearance, chat collapse). Re-adding the class restarts the animation.
+window.petApi?.onShown?.(() => {
+  document.body.classList.remove("pet-pop-in");
+  // Force a reflow so re-adding the class restarts the CSS animation.
+  void document.body.offsetWidth;
+  document.body.classList.add("pet-pop-in");
+});
+
 Promise.all([
   (window.petApi?.getSettings?.() ?? Promise.resolve(null)).catch(() => null),
   (window.petApi?.getCatMode?.() ?? Promise.resolve(null)).catch(() => null),
