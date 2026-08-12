@@ -1,6 +1,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
+const { spawnSync } = require("node:child_process");
 const {
   app,
   BrowserWindow,
@@ -790,8 +791,18 @@ function createPopover() {
   hardenWebContents(popover.webContents);
   popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // Sit in the normal window stacking order — other apps can come over the
-  // top. The popover still only disappears when the tray icon is clicked
-  // again (no blur-to-hide handler), so it doesn't vanish on focus change.
+  // top. On macOS, another app taking focus means the popover is covered:
+  // collapse to the desktop pet (Windows uses rect polling instead — see
+  // windowZCareTick — because focus and occlusion don't line up there).
+  popover.on("blur", () => {
+    if (process.platform !== "darwin") return;
+    if (!settings.get("desktopPet") || wsServer.isVscodeActive()) return;
+    setTimeout(() => {
+      if (!popover || popover.isDestroyed() || !popover.isVisible()) return;
+      if (popover.isFocused() || anyAppWindowFocused()) return;
+      collapsePopoverToDesktopPet();
+    }, 300);
+  });
 
   popover.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
 
@@ -981,6 +992,9 @@ function showDesktopPet() {
     return;
   }
   const pet = createDesktopPet();
+  // Respect the current fullscreen-app state — the pet yields the top layer
+  // while a fullscreen app owns the screen.
+  pet.setAlwaysOnTop(!fullscreenAppActive);
   maybeSendCatMode(pet);
   pet.showInactive();
 }
@@ -1188,6 +1202,150 @@ function closeHtmlPanel() {
   popover.setBounds({ x: bounds.x, y: bounds.y, width: newWidth, height: bounds.height }, true);
   htmlPanelWidth = 0;
   scheduleSavePopoverSize();
+}
+
+// ============================================================
+//  Window z-order care
+//  - The desktop pet stays on the top layer, EXCEPT while a
+//    fullscreen app owns the screen (the pet yields the top).
+//  - When another window covers the chat popover, the popover
+//    automatically collapses to the desktop pet.
+//  Windows: poll the foreground window's rect via PowerShell.
+//  macOS: blur on the popover means another app took over.
+// ============================================================
+const FG_POLL_MS = 1200;
+const COVERAGE_COLLAPSE_RATIO = 0.5;
+const COLLAPSE_DEBOUNCE_MS = 3000;
+
+const FG_PROBE_SCRIPT = [
+  "$src='using System;using System.Runtime.InteropServices;",
+  "public struct RECT{public int Left,Top,Right,Bottom;}",
+  "public class W{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();",
+  "[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out RECT r);",
+  "[DllImport(\"user32.dll\")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);}';",
+  "Add-Type $src -ErrorAction SilentlyContinue;",
+  "$r=New-Object RECT;",
+  "$h=[W]::GetForegroundWindow();",
+  "if($h -eq [IntPtr]::Zero){exit 0};",
+  "[W]::GetWindowRect($h,[ref]$r)|Out-Null;",
+  "$p=0;[W]::GetWindowThreadProcessId($h,[ref]$p)|Out-Null;",
+  "Write-Output ($r.Left.ToString()+','+$r.Top.ToString()+','+$r.Right.ToString()+','+$r.Bottom.ToString()+','+$p.ToString())"
+].join(" ");
+
+// Foreground window's rect + owning pid, or null when unavailable.
+function foregroundWindowInfo() {
+  if (process.platform !== "win32") return null;
+  try {
+    const result = spawnSync(
+      "powershell",
+      ["-NoProfile", "-NonInteractive", "-Command", FG_PROBE_SCRIPT],
+      { encoding: "utf8", timeout: 2000, windowsHide: true }
+    );
+    const out = String(result.stdout || "").trim();
+    const match = out.match(/(-?\d+),(-?\d+),(-?\d+),(-?\d+),(\d+)/);
+    if (!match) return null;
+    return {
+      left: Number(match[1]),
+      top: Number(match[2]),
+      right: Number(match[3]),
+      bottom: Number(match[4]),
+      pid: Number(match[5])
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Does the rect essentially fill a whole display (a fullscreen app)?
+function rectIsFullscreen(rect) {
+  if (!rect) return false;
+  const width = rect.right - rect.left;
+  const height = rect.bottom - rect.top;
+  if (width <= 0 || height <= 0) return false;
+  for (const display of screen.getAllDisplays()) {
+    const b = display.bounds;
+    if (width >= b.width * 0.98 && height >= b.height * 0.98) return true;
+  }
+  return false;
+}
+
+// Fraction of `target` covered by `rect` (0..1).
+function rectOverlapRatio(rect, target) {
+  if (!rect || !target) return 0;
+  const ix = Math.max(
+    0,
+    Math.min(rect.right, target.x + target.width) - Math.max(rect.left, target.x)
+  );
+  const iy = Math.max(
+    0,
+    Math.min(rect.bottom, target.y + target.height) - Math.max(rect.top, target.y)
+  );
+  const intersection = ix * iy;
+  if (intersection <= 0) return 0;
+  return intersection / (target.width * target.height);
+}
+
+let fullscreenAppActive = false;
+let fgPollTimer = null;
+let lastCoverageCollapseAt = 0;
+
+function applyFullscreenState(fullscreen) {
+  if (fullscreenAppActive === fullscreen) return;
+  fullscreenAppActive = fullscreen;
+  if (desktopPet && !desktopPet.isDestroyed()) {
+    desktopPet.setAlwaysOnTop(!fullscreen);
+  }
+  console.info(
+    `main: fullscreen app ${fullscreen ? "entered" : "left"} — pet alwaysOnTop=${!fullscreen}`
+  );
+}
+
+// True when one of our own secondary windows has focus (so covering the
+// popover with a settings dialog never collapses it).
+function anyAppWindowFocused() {
+  for (const win of [
+    priestessSettingsWindow,
+    personaNotesWindow,
+    creditsWindow,
+    minimaxTtsSettingsWindow,
+    systemPromptWindow
+  ]) {
+    if (win && !win.isDestroyed() && win.isFocused()) return true;
+  }
+  return false;
+}
+
+function windowZCareTick() {
+  const petVisible = desktopPet && !desktopPet.isDestroyed() && desktopPet.isVisible();
+  const popoverVisible = popover && !popover.isDestroyed() && popover.isVisible();
+  if (!petVisible && !popoverVisible) return;
+
+  const fg = foregroundWindowInfo();
+  if (!fg) return;
+
+  applyFullscreenState(rectIsFullscreen(fg));
+
+  // Covered → pet. Our own windows and VS Code attention are exempt.
+  if (
+    popoverVisible &&
+    settings.get("desktopPet") &&
+    !wsServer.isVscodeActive() &&
+    fg.pid !== process.pid
+  ) {
+    const ratio = rectOverlapRatio(fg, popover.getBounds());
+    if (ratio > COVERAGE_COLLAPSE_RATIO) {
+      const now = Date.now();
+      if (now - lastCoverageCollapseAt > COLLAPSE_DEBOUNCE_MS) {
+        lastCoverageCollapseAt = now;
+        collapsePopoverToDesktopPet();
+      }
+    }
+  }
+}
+
+function startWindowZCare() {
+  if (fgPollTimer) return;
+  fgPollTimer = setInterval(windowZCareTick, FG_POLL_MS);
 }
 
 // ============================================================
@@ -2444,6 +2602,7 @@ if (!gotSingleInstanceLock) {
 
   createPopover();
   scheduleDesktopPet();
+  startWindowZCare();
 });
 
 app.on("window-all-closed", () => {
