@@ -2231,6 +2231,79 @@ window.minimaxTtsApi?.onAudio?.((payload) => {
   ttsPlayNext();
 });
 
+// ============================================================
+//  Message context menu — right-click a chat bubble for quick
+//  actions. The item list is extensible; currently: replay voice.
+// ============================================================
+const msgMenuEl = document.getElementById("msgMenu");
+let msgMenuTarget = null;
+
+// Extensible item list. Each item: { label, enabled, run() }.
+// Only items whose `enabled` is true are shown.
+function msgMenuItemsFor(msg) {
+  const items = [];
+  const text = (msg?.text || "").trim();
+  if (msg?.role === "assistant" && text) {
+    items.push({
+      label: "🔊 重新播放语音",
+      enabled: Boolean(lastSettingsPayload?.minimaxTtsEnabled),
+      run: () => window.minimaxTtsApi?.replay?.(text),
+    });
+  }
+  return items;
+}
+
+function openMsgMenu(event) {
+  const msgEl = event.target.closest?.(".msg");
+  if (!msgEl || !msgEl.dataset.id) return;
+  const msg = lastHistory.find((m) => m.id === msgEl.dataset.id);
+  const items = msgMenuItemsFor(msg).filter((item) => item.enabled);
+  if (!items.length) return;
+  event.preventDefault();
+
+  msgMenuTarget = msg;
+  const nodes = [];
+  items.forEach((item, index) => {
+    if (index > 0) {
+      const sep = document.createElement("div");
+      sep.className = "msg-menu-sep";
+      nodes.push(sep);
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "msg-menu-item";
+    btn.textContent = item.label;
+    btn.addEventListener("click", () => {
+      closeMsgMenu();
+      item.run();
+    });
+    nodes.push(btn);
+  });
+  msgMenuEl.replaceChildren(...nodes);
+  msgMenuEl.hidden = false;
+  // Position at the cursor, clamped inside the popover.
+  const rect = msgMenuEl.getBoundingClientRect();
+  const x = Math.min(event.clientX, window.innerWidth - rect.width - 8);
+  const y = Math.min(event.clientY, window.innerHeight - rect.height - 8);
+  msgMenuEl.style.left = `${Math.max(4, x)}px`;
+  msgMenuEl.style.top = `${Math.max(4, y)}px`;
+}
+
+function closeMsgMenu() {
+  msgMenuEl.hidden = true;
+  msgMenuTarget = null;
+}
+
+chatStream.addEventListener("contextmenu", openMsgMenu);
+window.addEventListener("pointerdown", (event) => {
+  if (msgMenuEl.hidden) return;
+  if (!msgMenuEl.contains(event.target)) closeMsgMenu();
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMsgMenu();
+});
+window.addEventListener("blur", closeMsgMenu);
+
 window.petApi?.onSettings?.(renderSettings);
 window.petApi?.onCatMode?.(applyCatMode);
 

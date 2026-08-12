@@ -1084,3 +1084,42 @@ body.file-dragging::after {
   background: var(--her-soft);
   border-color: var(--her-edge);
 }
+
+/* ============================================================
+   Chat message context menu (right-click)
+   ============================================================ */
+.msg-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.30);
+  user-select: none;
+}
+.msg-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.msg-menu-item:hover {
+  background: var(--her-soft);
+}
+.msg-menu-sep {
+  height: 1px;
+  margin: 3px 6px;
+  background: var(--border);
+  opacity: 0.6;
+}

@@ -205,7 +205,9 @@ function ttsOnChunk() {
 // One-shot TTS synthesis for the settings-window "test" button. Pushes the
 // synthesized audio to whichever window is asking (the settings window), so
 // the Doctor can hear the configured voice without sending a chat message.
-function ttsOneShotTest(text, senderWindow) {
+// `seq` (optional) makes the popover's ordered clip queue treat this clip as
+// the next turn clip; omit for windows with their own simple playback.
+function ttsOneShotTest(text, senderWindow, seq) {
   if (!minimaxTts.enabled()) return { ok: false, reason: "disabled" };
   const trimmed = String(text || "").trim();
   if (!trimmed) return { ok: false, reason: "empty" };
@@ -214,17 +216,19 @@ function ttsOneShotTest(text, senderWindow) {
     onAudio(buf) {
       // Non-streaming delivers the whole audio in one callback.
       if (senderWindow && !senderWindow.isDestroyed()) {
-        senderWindow.webContents.send("minimax-tts:audio", {
+        const payload = {
           buffer: buf.toString("base64"),
           isFinal: true,
           format: String(settings.get("minimaxTtsFormat") || "mp3"),
           sampleRate: Number(settings.get("minimaxTtsSampleRate")) || 32000,
-        });
+        };
+        if (Number.isFinite(seq) && seq > 0) payload.seq = seq;
+        senderWindow.webContents.send("minimax-tts:audio", payload);
       }
     },
     onDone() {},
     onError(err) {
-      console.warn("main: minimax TTS test error", err.message);
+      console.warn("main: minimax TTS error", err.message);
     },
   });
   if (!socket) return { ok: false, reason: "connect-failed" };
@@ -2689,6 +2693,16 @@ ipcMain.handle("minimax-tts:test", (event, payload) => {
     setTimeout(() => settings.set(saved), 800);
   }
   return result;
+});
+
+// Replay voice for a chat message (right-click menu). Re-synthesizes the
+// message text and pushes the clip to the popover with the next sequence
+// number, so it plays in order after anything currently queued.
+ipcMain.handle("minimax-tts:replay", (_event, text) => {
+  if (typeof text !== "string" || !text.trim()) return { ok: false, reason: "empty" };
+  if (!popover || popover.isDestroyed()) return { ok: false, reason: "no-window" };
+  ttsSeq += 1;
+  return ttsOneShotTest(text, popover, ttsSeq);
 });
 
 ipcMain.handle("desktop-pet:cat-mode-get", () => currentCatMode);

@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld("minimaxTtsApi", {
   setConfig: (cfg) => ipcRenderer.invoke("minimax-tts:set-config", cfg),
   closeSettings: () => ipcRenderer.invoke("minimax-tts:close-settings"),
   test: (payload) => ipcRenderer.invoke("minimax-tts:test", payload),
+  replay: (text) => ipcRenderer.invoke("minimax-tts:replay", text),
   onAudio: onChannel("minimax-tts:audio"),
 });
 
