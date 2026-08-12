@@ -104,6 +104,7 @@ let priestessSettingsWindow = null;
 let personaNotesWindow = null;
 let creditsWindow = null;
 let minimaxTtsSettingsWindow = null;
+let systemPromptWindow = null;
 // TTS state — sentences are synthesized as they stream in (non-streaming
 // HTTP, one request per sentence) so playback starts on the first sentence
 // instead of waiting for the whole reply. The renderer plays sentence clips
@@ -410,6 +411,42 @@ function openMinimaxTtsSettings() {
   });
   minimaxTtsSettingsWindow.on("closed", () => {
     minimaxTtsSettingsWindow = null;
+  });
+}
+
+function openSystemPromptSettings() {
+  if (systemPromptWindow && !systemPromptWindow.isDestroyed()) {
+    systemPromptWindow.show();
+    systemPromptWindow.focus();
+    return;
+  }
+  systemPromptWindow = new BrowserWindow({
+    width: 560,
+    height: 700,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    title: "PRTS · 系统提示词",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#11151a" : "#e9edf2",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  systemPromptWindow.setMenuBarVisibility?.(false);
+  hardenWebContents(systemPromptWindow.webContents);
+  systemPromptWindow.loadFile(
+    path.join(__dirname, "..", "renderer", "system-prompt-settings.html")
+  );
+  systemPromptWindow.once("ready-to-show", () => {
+    systemPromptWindow?.show();
+    systemPromptWindow?.focus();
+  });
+  systemPromptWindow.on("closed", () => {
+    systemPromptWindow = null;
   });
 }
 
@@ -1168,6 +1205,11 @@ const MENU_TEXT = {
     outfitCasual: "休闲",
     skills: "允许她使用技能（音乐 / 搜索 / 应用）",
     coauthorCommits: "提交时署名普瑞赛斯（共同作者）",
+    showHeaderBadges: "显示状态徽章（版本 / 后端 / 模式）",
+    replyLength: "回复长度",
+    replyShort: "💬 简短 · 微信式",
+    replyMedium: "📝 适中 · 平衡",
+    replyLong: "📚 详细 · 展开",
     agentMode: "Agent mode（完整屏幕控制）",
     enableAgentTitle: "开启 agent mode？",
     enableAgent: "开启 agent mode",
@@ -1199,6 +1241,7 @@ const MENU_TEXT = {
     priestessSettings: "内置普瑞赛斯设置…",
     personaNotes: "补充校准…",
     minimaxTtsSettings: "语音合成设置…",
+    systemPrompt: "系统提示词…",
     modelClaude: "模型（Claude）",
     modelCodex: "模型（Codex）",
     reasoningClaude: "推理强度（Claude）",
@@ -1257,6 +1300,11 @@ const MENU_TEXT = {
     outfitCasual: "休闲 · Casual",
     skills: "Let her use skills (music · search · apps)",
     coauthorCommits: "Co-author commits as 普瑞赛斯",
+    showHeaderBadges: "Show status badges (version / backend / mode)",
+    replyLength: "Reply length",
+    replyShort: "💬 Short · WeChat-style",
+    replyMedium: "📝 Medium · balanced",
+    replyLong: "📚 Long · detailed",
     agentMode: "Agent mode (full screen control)",
     enableAgentTitle: "Enable agent mode?",
     enableAgent: "Enable agent mode",
@@ -1286,6 +1334,7 @@ const MENU_TEXT = {
     priestessSettings: "Built-in Priestess settings…",
     personaNotes: "Persona supplement…",
     minimaxTtsSettings: "Voice synthesis settings…",
+    systemPrompt: "System prompt…",
     modelClaude: "Model (Claude)",
     modelCodex: "Model (Codex)",
     reasoningClaude: "Reasoning effort (Claude)",
@@ -1828,6 +1877,35 @@ function buildContextMenu() {
       ]
     },
     {
+      label: mt("showHeaderBadges"),
+      type: "checkbox",
+      checked: all.showHeaderBadges !== false,
+      click: (item) => settings.set({ showHeaderBadges: item.checked })
+    },
+    {
+      label: mt("replyLength"),
+      submenu: [
+        {
+          label: mt("replyShort"),
+          type: "radio",
+          checked: (all.replyLength || "medium") === "short",
+          click: () => settings.set({ replyLength: "short" })
+        },
+        {
+          label: mt("replyMedium"),
+          type: "radio",
+          checked: (all.replyLength || "medium") === "medium",
+          click: () => settings.set({ replyLength: "medium" })
+        },
+        {
+          label: mt("replyLong"),
+          type: "radio",
+          checked: all.replyLength === "long",
+          click: () => settings.set({ replyLength: "long" })
+        }
+      ]
+    },
+    {
       label: mt("skills"),
       type: "checkbox",
       checked: all.skillsEnabled !== false,
@@ -1885,6 +1963,10 @@ function buildContextMenu() {
     {
       label: mt("personaNotes"),
       click: () => openPersonaNotesWindow()
+    },
+    {
+      label: mt("systemPrompt"),
+      click: () => openSystemPromptSettings()
     },
     {
       label: mt("autoScreenshot"),
@@ -2617,6 +2699,27 @@ ipcMain.handle("persona-notes:set", (_, notes) => {
 });
 ipcMain.handle("persona-notes:close", () => {
   personaNotesWindow?.close();
+});
+
+// System prompt — the persona core. get() returns the current override plus
+// the built-in default (for the "restore default" reference). set() stores
+// the override; enabled=false or empty prompt clears it back to the default.
+ipcMain.handle("system-prompt:get", () => ({
+  override: String(settings.get("systemPromptOverride") || ""),
+  defaultPrompt: persona.basePersonaCore(),
+}));
+
+ipcMain.handle("system-prompt:set", (_, cfg) => {
+  const enabled = Boolean(cfg?.enabled);
+  const prompt = String(cfg?.prompt ?? "");
+  settings.set({
+    systemPromptOverride: enabled && prompt.trim() ? prompt : "",
+  });
+  return { ok: true };
+});
+
+ipcMain.handle("system-prompt:close", () => {
+  systemPromptWindow?.close();
 });
 
 ipcMain.handle("credits:get", () => ({

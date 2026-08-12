@@ -2081,11 +2081,19 @@ function refreshComposerMeta() {
     cwdLine.textContent = t("cwd_home", provider) + queueSuffix + runningSuffix + ` · ${modeLabel}`;
     cwdLine.title = "";
   }
-  if (providerBadge) providerBadge.textContent = provider;
-  if (versionBadge && payload?.appVersion) versionBadge.textContent = `v${payload.appVersion}`;
+  // Header badges can be hidden from the tray menu (showHeaderBadges).
+  const showBadges = payload?.showHeaderBadges !== false;
+  if (providerBadge) {
+    providerBadge.textContent = provider;
+    providerBadge.hidden = !showBadges;
+  }
+  if (versionBadge) {
+    if (payload?.appVersion) versionBadge.textContent = `v${payload.appVersion}`;
+    versionBadge.hidden = !showBadges;
+  }
   // Vibe coding mode badge
   if (agentBadge) {
-    agentBadge.hidden = false;
+    agentBadge.hidden = !showBadges;
     if (mode === "agent") {
       agentBadge.textContent = "⚡ agent";
       agentBadge.style.color = "var(--vscode-charts-orange)";

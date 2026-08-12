@@ -48,6 +48,12 @@ contextBridge.exposeInMainWorld("personaNotesApi", {
   close: () => ipcRenderer.invoke("persona-notes:close")
 });
 
+contextBridge.exposeInMainWorld("systemPromptApi", {
+  get: () => ipcRenderer.invoke("system-prompt:get"),
+  set: (cfg) => ipcRenderer.invoke("system-prompt:set", cfg),
+  close: () => ipcRenderer.invoke("system-prompt:close")
+});
+
 contextBridge.exposeInMainWorld("creditsApi", {
   get: () => ipcRenderer.invoke("credits:get"),
   openLink: (url) => ipcRenderer.invoke("credits:open-link", url),

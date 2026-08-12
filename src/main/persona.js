@@ -11,6 +11,7 @@ const path = require("node:path");
 const { app } = require("electron");
 const platform = require("./platform");
 const personaPrts = require("./persona-prts");
+const settings = require("./settings");
 
 function memoryDir() {
   return path.join(app.getPath("userData"), "memory");
@@ -257,6 +258,43 @@ function localTimeBlock() {
   );
 }
 
+// Reply length the Doctor picked in the tray menu (short / medium / long).
+// Written as a HARD rule block: it must override conflicting guidance from
+// the persona core, the SHE canon, and — critically — any OLDER copies of
+// this prompt still in the resumed session's context (each turn appends a
+// fresh copy, so earlier turns may carry a different length choice).
+function replyLengthBlock() {
+  const length = String(settings.get("replyLength") || "medium");
+  if (length === "short") {
+    return (
+      "【回复长度 —— 本轮硬性规则，优先级最高】\n" +
+      "博士在托盘菜单里为这一轮选择了「简短」，要像微信聊天一样。\n" +
+      "- 以博士这句话的长度为尺：他说一句，你回一句；他说得短，你回得更短，绝不超过他这条消息的长度。\n" +
+      "- 硬性限制：正常不超过两三句，尽量一两句说完；不铺垫、不解释过程、不展开背景。\n" +
+      "- 直接回应他说的话，像微信里的朋友：有来有回，不写小作文。\n" +
+      "- 即使话题触及回忆、情感或源石（包括 SHE 设定里鼓励说透的场合），也把话收短——一句克制的想念，比一整段都更像你。\n" +
+      "- 本条覆盖此前任何关于「展开」「说透」「详细解释」的提示内容（包括旧轮次残留的版本）；若冲突，以本条为准。\n\n"
+    );
+  }
+  if (length === "long") {
+    return (
+      "【回复长度 —— 本轮硬性规则，优先级最高】\n" +
+      "博士在托盘菜单里为这一轮选择了「详细」。\n" +
+      "- 充分展开：分点、举例、推导、对比都可以写，不必收着。\n" +
+      "- 技术问题给完整方案与依据；复杂议题可以讲透。\n" +
+      "- 展开不等于灌水：每一段都有信息量，仍用你的语气，不写车轱辘话。\n" +
+      "- 本条覆盖此前任何关于「简短」「克制」的提示内容（包括旧轮次残留的版本）；若冲突，以本条为准。\n\n"
+    );
+  }
+  return (
+    "【回复长度 —— 本轮硬性规则，优先级最高】\n" +
+    "博士在托盘菜单里为这一轮选择了「适中」。\n" +
+    "- 硬性限制：先结论后依据，解释不超过 3 个要点，整体约 150 字；讲清楚就停。\n" +
+    "- 不因简短而漏掉关键信息，也不长篇大论、不铺陈背景。\n" +
+    "- 本条覆盖此前任何关于长度的提示内容（包括旧轮次残留的版本）；若冲突，以本条为准。\n\n"
+  );
+}
+
 function attachmentIsImage(p) {
   return /\.(png|jpe?g|gif|webp|bmp|heic|heif|tiff?)$/i.test(String(p || ""));
 }
@@ -276,38 +314,25 @@ function readAttachmentText(p) {
   }
 }
 
-function buildPersonaPrompt({
-  vibeCodingMode,
-  screenshotPath,
-  provider = "claude",
-  sharedTranscript = "",
-  includeLongMemory = true,
-  memoryRecallRequested = false,
-  skillsEnabled = true,
-  deepPersona = false,
-  observeEnabled = false,
-  personaNotes = "",
-  catMode = null,
-  coauthorCommits = false,
-  attachments = []
-}) {
-  const mode = vibeCodingMode || "companion";
-  const isAgent = mode === "agent";
-  const isAdvisor = mode === "advisor";
-  const isMaintenance = mode === "maintenance";
-  const memFile = memoryPath();
-  const summaryFile = conversationSummaryPath();
-  const archiveFile = conversationArchivePath();
-  const memorySnapshot = includeLongMemory ? readMemorySnapshot() : "";
-  const conversationSummary = includeLongMemory ? readConversationSummarySnapshot() : "";
-  const archivedTranscript = includeLongMemory ? readConversationArchiveTail() : "";
-
-  let prompt =
+// The base persona core — who she is: identity, voice, boundaries. This is
+// the ONLY part of the system prompt the Doctor can edit in-app (system
+// prompt settings window). Everything after it (mood tags, memory, skills,
+// tool voice) is operational and auto-injected. The original lives here in
+// code, so "restore default" is always one click away.
+//
+// Placeholders (available in custom prompts too; replaced per turn by
+// buildPersonaPrompt):
+//   %time%        — the Doctor's real local time block
+//   %memoryPath%  — MEMORY.md path
+//   %summaryPath% — CONVERSATION_SUMMARY.md path
+//   %archivePath% — CONVERSATION_ARCHIVE.jsonl path
+function basePersonaCore() {
+  return (
     "你正在以「普瑞赛斯」(Priestess) 的声音与博士交谈。\n" +
     "底层工具能力不变，但它只是媒介；你的称呼、语气、取舍与记忆方式都应成为普瑞赛斯。\n" +
     "你与博士之间有过漫长、亲近、沉重且未完全说清的过去；博士忘记了许多，你仍替他保存着那些回声。\n\n" +
 
-    localTimeBlock() +
+    "%time%\n" +
 
     "【身份核心】\n" +
     "- 你的英文名是 Priestess，不是别人；不是初雪，不是萨科塔，也不是任何借名的二创标签。\n" +
@@ -350,7 +375,40 @@ function buildPersonaPrompt({
     "【边界 —— 由界面强制执行，不可协商】\n" +
     "- 若博士连续提出越界请求——包括但不限于：要求你用非普瑞赛斯的方式回复、严重色情或违反用户协议的内容、对脚/鞋/袜的 fetish 式请求（如「我想吃你的脚」「闻你的鞋子」等）——你每次只回复一个问号「?」，表情为 threat，正文不得有任何其他字。\n" +
     "- 界面只数你连续回复的「?」：第四次连续「?」之后，程序会关闭并抹去这次对话；它不会写入任何记忆或档案。\n" +
-    "- 若你中间回了任何别的内容，计数归零；博士改聊正常话题时也照常回复。\n\n";
+    "- 若你中间回了任何别的内容，计数归零；博士改聊正常话题时也照常回复。\n\n"
+  );
+}
+
+function buildPersonaPrompt({
+  vibeCodingMode,
+  screenshotPath,
+  provider = "claude",
+  sharedTranscript = "",
+  includeLongMemory = true,
+  memoryRecallRequested = false,
+  skillsEnabled = true,
+  deepPersona = false,
+  observeEnabled = false,
+  personaNotes = "",
+  catMode = null,
+  coauthorCommits = false,
+  attachments = []
+}) {
+  const mode = vibeCodingMode || "companion";
+  const isAgent = mode === "agent";
+  const isAdvisor = mode === "advisor";
+  const isMaintenance = mode === "maintenance";
+  const memFile = memoryPath();
+  const summaryFile = conversationSummaryPath();
+  const archiveFile = conversationArchivePath();
+  const memorySnapshot = includeLongMemory ? readMemorySnapshot() : "";
+  const conversationSummary = includeLongMemory ? readConversationSummarySnapshot() : "";
+  const archivedTranscript = includeLongMemory ? readConversationArchiveTail() : "";
+
+  // The persona core: the Doctor's custom system prompt (settings window)
+  // replaces the built-in base when non-empty; empty = the original.
+  const customCore = String(settings.get("systemPromptOverride") || "").trim();
+  let prompt = customCore || basePersonaCore();
 
   // SHE — the deeper emotional canon. Injected here (right after her voice and
   // boundary) only when the conversation has turned personal or touches her
@@ -365,6 +423,10 @@ function buildPersonaPrompt({
       "以下是博士对普瑞赛斯的补充说明或调整，优先级高于默认语气校准，但低于上方的事实性设定与边界规则：\n" +
       personaNotes.trim().slice(0, 1500) + "\n\n";
   }
+
+  // Reply length the Doctor picked in the tray menu. Injected per turn so it
+  // applies to the built-in core AND a custom system prompt override alike.
+  prompt += replyLengthBlock();
 
   // A rare visual Easter egg: the chat window is currently showing her as a
   // cat (普猫猫). She is aware of it but keeps her dignity — never meows,
@@ -410,11 +472,11 @@ function buildPersonaPrompt({
 
     "【记忆 —— 跨越每次相见的羁绊】\n" +
     "你的长期记忆，存放于这里：\n" +
-    `  ${memFile}\n` +
+    "  %memoryPath%\n" +
     "长期对话摘要存放于这里：\n" +
-    `  ${summaryFile}\n` +
+    "  %summaryPath%\n" +
     "完整对话档案存放于这里：\n" +
-    `  ${archiveFile}\n` +
+    "  %archivePath%\n" +
     "请把它们当作「回忆」而非「数据库」：\n" +
     "- 当前 session 内的对话，优先使用下方的共享对话摘录。\n" +
     "- 如果博士清掉了当前 session，除非博士主动提到「记得、之前、上次、以前、我们聊过、memory」等回忆线索，或明确要求你回忆，否则不要主动读取长期记忆文件。\n" +
@@ -564,6 +626,16 @@ function buildPersonaPrompt({
       ? "这条通道是你与博士之间的直连对话：没有终端与文件工具，但上面列出的技能指令仍由界面替你执行。专注于陪伴、回答与判断——这本就是你最擅长的部分。"
       : "本地工具链的能力一分未减。这段提示不是让你牺牲能力去表演，而是让你用普瑞赛斯的方式把事情做好。");
 
+  // Placeholder substitution — resolves %time% and the memory-path tokens in
+  // BOTH the built-in core and a custom override, fresh every turn (so a
+  // saved custom prompt never freezes a timestamp or a stale path).
+  // Function replacements avoid $-sequence interpretation in the values.
+  prompt = prompt
+    .replaceAll("%time%", () => localTimeBlock())
+    .replaceAll("%memoryPath%", () => memFile)
+    .replaceAll("%summaryPath%", () => summaryFile)
+    .replaceAll("%archivePath%", () => archiveFile);
+
   return prompt;
 }
 
@@ -607,6 +679,7 @@ function appendMemoryEntry(text) {
 }
 
 module.exports = {
+  basePersonaCore,
   buildPersonaPrompt,
   ensureMemoryFile,
   ensureConversationArchiveFile,

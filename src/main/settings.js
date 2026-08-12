@@ -86,9 +86,22 @@ const DEFAULTS = Object.freeze({
   desktopPetScale: 1.0,
   desktopPetPosition: null,
   popoverSize: { width: 380, height: 560 },
+  // Header badges in the popover title bar (version / backend / vibe-coding
+  // mode). Toggleable from the tray menu; off hides all three.
+  showHeaderBadges: true,
+  // Reply length she aims for: "short" (chat-like, one or two lines),
+  // "medium" (complete but concise, default), "long" (detailed and thorough).
+  // Injected into the persona prompt each turn.
+  replyLength: "medium",
   // Freeform persona supplement written by the Doctor in-app. Appended after
   // the base persona as 【博士的补充校准】. Max ~1500 chars; empty = inactive.
   personaNotes: "",
+  // Full replacement for the base persona core (identity/voice/boundaries).
+  // Empty = the built-in original (persona.js basePersonaCore()); non-empty =
+  // this text REPLACES the base core while all dynamic blocks (mood tags,
+  // memory, skills, tool voice) still auto-inject. Written by the system
+  // prompt settings window; "restore default" clears it back to empty.
+  systemPromptOverride: "",
   // MiniMax TTS (Text-to-Speech) — streams Agent replies through the MiniMax
   // T2A WebSocket API (wss://api.minimaxi.com/ws/v1/t2a_v2) so she can speak
   // aloud. API key, voice, and model are configured in the tray-menu settings
@@ -172,6 +185,7 @@ const VALIDATORS = {
   outfit: (v) => ["formal", "casual"].includes(v),
   updateChannel: (v) => ["stable", "prerelease"].includes(v),
   minimaxTtsStrategy: (v) => ["firstSentence", "whole", "perSentence"].includes(v),
+  replyLength: (v) => ["short", "medium", "long"].includes(v),
   desktopPetSize: () => false // deprecated, reject
 };
 

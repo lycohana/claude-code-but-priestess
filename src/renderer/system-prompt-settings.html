@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>系统提示词</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1d2733;
+        --fg-dim: #5a6a7a;
+        --bg: #e9edf2;
+        --card: #ffffffb8;
+        --line: #c6cfd9;
+        --accent: #2e7d5b;
+        --accent-fg: #ffffff;
+        --danger: #b3473e;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #d7e3ec;
+          --fg-dim: #8aa0b2;
+          --bg: #11151a;
+          --card: #1a212b99;
+          --line: #2c3944;
+          --accent: #3fa97c;
+          --accent-fg: #0c1310;
+          --danger: #e07b72;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 18px 20px 16px;
+        font: 13px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        user-select: none;
+      }
+      h1 { font-size: 15px; margin: 0 0 4px; }
+      p.note {
+        margin: 0 0 12px;
+        color: var(--fg-dim);
+        font-size: 12px;
+      }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-weight: 600;
+      }
+      textarea {
+        flex: 1;
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--fg);
+        font: 12px/1.6 ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Microsoft YaHei", monospace;
+        resize: none;
+        outline: none;
+        user-select: text;
+      }
+      textarea:focus { border-color: var(--accent); }
+      textarea:disabled { opacity: 0.6; }
+      .actions {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .actions .left { display: flex; gap: 8px; }
+      button {
+        padding: 7px 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--fg);
+        font: inherit;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-fg);
+        font-weight: 600;
+      }
+      button.danger {
+        color: var(--danger);
+        border-color: var(--danger);
+      }
+      button:disabled { opacity: 0.55; cursor: default; }
+      #status {
+        margin-top: 8px;
+        font-size: 12px;
+        min-height: 1.4em;
+        color: var(--fg-dim);
+        user-select: text;
+      }
+      #status.ok { color: var(--accent); }
+      #status.err { color: var(--danger); }
+      .hint { font-size: 11px; color: var(--fg-dim); margin-top: 3px; }
+    </style>
+  </head>
+  <body>
+    <h1>系统提示词 · System Prompt</h1>
+    <p class="note">
+      这是她的「人格核心」——身份、语气与边界。动态部分（表情标记、记忆、技能、工具语气）由程序自动注入，不在这里显示。
+    </p>
+
+    <div class="toggle-row">
+      <input type="checkbox" id="enabled" />
+      <label for="enabled">启用自定义提示词（替换内置默认）</label>
+    </div>
+
+    <textarea id="prompt" spellcheck="false" placeholder="输入自定义系统提示词…"></textarea>
+    <div class="hint">
+      启用并保存后，这段文字将替换内置人格核心；表情标记、记忆读取、技能指令等动态区块仍会照常附加。
+      <br />可用占位符（每轮自动替换）：<code>%time%</code> 本机时间 · <code>%memoryPath%</code> 记忆文件路径 · <code>%summaryPath%</code> 摘要路径 · <code>%archivePath%</code> 档案路径
+    </div>
+
+    <div class="actions">
+      <div class="left">
+        <button type="button" id="resetBtn" class="danger" title="清空自定义，恢复内置默认">恢复默认</button>
+      </div>
+      <div>
+        <button type="button" id="cancelBtn">取消</button>
+        <button type="button" id="saveBtn" class="primary">保存</button>
+      </div>
+    </div>
+
+    <div id="status"></div>
+
+    <script src="./system-prompt-settings.js"></script>
+  </body>
+</html>
