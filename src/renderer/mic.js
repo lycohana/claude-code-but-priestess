@@ -160,8 +160,9 @@
               : `麦克风 ${i + 1}`;
           return { deviceId: id, label };
         })
-        // Drop synthetic/empty ids ("", "default", "communications"): the OS
-        // default is already covered by the menu's "默认麦克风" entry.
+        // Filter out the "default"/"communications" alias entries — they're
+        // just the OS-default microphone under a synthetic id, already covered
+        // by the tray menu's "默认麦克风" item. Keep every REAL device.
         .filter((d) => d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications");
       voiceApi.reportDevices(inputs);
     } catch {
