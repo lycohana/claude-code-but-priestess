@@ -30,7 +30,7 @@
   function renderState(payload) {
     currentState = payload.state;
     const transcript = payload.transcript || "";
-    micBtn.classList.remove("listening", "active");
+    micBtn.classList.remove("listening", "thinking", "active", "mic-live");
 
     switch (payload.state) {
       case "preparing":
@@ -40,6 +40,7 @@
               ? payload.progress + "%"
               : "（首次需下载本地模型，请稍候）")
         );
+        micBtn.classList.add("mic-live");
         break;
       case "idle":
         showStatus(
@@ -49,6 +50,7 @@
               : "喊「普瑞赛斯」，或点击麦克风说话（语音回复需先开启「语音合成」）"
             : ""
         );
+        if (voiceEnabled) micBtn.classList.add("mic-live");
         break;
       case "listening":
         showStatus("聆听中… " + (transcript || ""));
@@ -56,10 +58,10 @@
         break;
       case "thinking":
         showStatus("正在识别…");
-        micBtn.classList.add("active");
+        micBtn.classList.add("thinking");
         break;
       case "active":
-        showStatus("");
+        showStatus("她正在回复…");
         micBtn.classList.add("active");
         break;
       case "off":

@@ -1942,6 +1942,30 @@ composer.addEventListener("submit", async (event) => {
 
 if (cancelBtn) cancelBtn.addEventListener("click", () => window.chatApi.cancel());
 
+// 📌 pin — always-on-top + no-collapse (both together), so the chat stays
+// visible above other windows while the Doctor debugs.
+const pinBtn = document.getElementById("pinBtn");
+let pinPinned = false;
+function renderPinState(pinned) {
+  pinPinned = Boolean(pinned);
+  if (pinBtn) {
+    pinBtn.classList.toggle("pinned", pinPinned);
+    pinBtn.setAttribute("aria-pressed", String(pinPinned));
+    pinBtn.title = pinPinned ? "已置顶（点击取消置顶）" : "置顶窗口（始终在最上层，失焦不收起）";
+  }
+}
+if (pinBtn) {
+  pinBtn.addEventListener("click", async () => {
+    try {
+      const next = await window.pinApi?.setPinned?.(!pinPinned);
+      renderPinState(next);
+    } catch (error) {
+      console.error("pin toggle failed:", error);
+    }
+  });
+  window.pinApi?.getPinned?.().then(renderPinState).catch(() => {});
+}
+
 // The × hides the popover (collapsing to the desktop pet when it's enabled)
 // — the tray-companion convention where closing never quits her; a running
 // reply keeps streaming in the background.
@@ -2160,23 +2184,39 @@ function mimeTypeFor(fmt) {
 }
 
 function ttsFlushQueue() {
-  // A new turn started: drop everything pending and stop current playback.
+  // A new turn started: drop everything pending and stop current playback,
+  // AND reset the seq pointer so this turn's clips (which restart at seq 1)
+  // are played rather than being skipped by a stale next-seq.
   for (const url of ttsClips.values()) URL.revokeObjectURL(url);
   ttsClips.clear();
   try { ttsAudioEl.pause(); } catch (_) { /* ignore */ }
   if (ttsCurrentUrl) { URL.revokeObjectURL(ttsCurrentUrl); ttsCurrentUrl = null; }
   ttsPlaying = false;
+  ttsNextSeq = 1;
+  ttsReportSpeaking(false);
+}
+
+// Tell main whether audio is actually playing, so it keeps the window open
+// (and un-collapsed) while she speaks.
+function ttsReportSpeaking(speaking) {
+  try {
+    window.minimaxTtsApi?.reportPlayback?.(Boolean(speaking));
+  } catch (_) { /* ignore */ }
 }
 
 function ttsPlayNext() {
   if (ttsPlaying) return;
   const clip = ttsClips.get(ttsNextSeq);
-  if (!clip) return;
+  if (!clip) {
+    ttsReportSpeaking(false);
+    return;
+  }
   ttsClips.delete(ttsNextSeq);
   ttsPlaying = true;
   if (ttsCurrentUrl) { URL.revokeObjectURL(ttsCurrentUrl); }
   ttsCurrentUrl = clip.url;
   ttsAudioEl.src = clip.url;
+  ttsReportSpeaking(true);
   const thisSeq = ttsNextSeq;
   const onEnded = () => {
     if (ttsCurrentUrl === clip.url) { URL.revokeObjectURL(ttsCurrentUrl); ttsCurrentUrl = null; }
@@ -2184,6 +2224,8 @@ function ttsPlayNext() {
     ttsAudioEl.removeEventListener("error", onEnded);
     ttsPlaying = false;
     ttsNextSeq = thisSeq + 1;
+    // Report false only if there's nothing left to play.
+    if (!ttsClips.has(ttsNextSeq)) ttsReportSpeaking(false);
     ttsPlayNext();
   };
   ttsAudioEl.addEventListener("ended", onEnded);

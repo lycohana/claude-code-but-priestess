@@ -232,6 +232,44 @@ button.ghost.window-btn {
   margin-left: 6px;
 }
 
+/* 📌 pin button — highlighted when pinned */
+button.ghost.pin-btn {
+  width: 26px;
+  padding: 3px 0;
+  font-size: 13px;
+  line-height: 1.1;
+  text-align: center;
+}
+button.ghost.pin-btn.pinned {
+  color: #0a0a0a;
+  background: var(--her);
+  border-color: var(--her);
+}
+
+/* Mic button state colors — clearly disambiguate the voice lifecycle. */
+.mic-btn.mic-live {
+  color: var(--her);
+  border-color: var(--her);
+}
+.mic-btn.listening {
+  background: rgba(123, 223, 242, 0.34);
+  border-color: var(--her);
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+.mic-btn.thinking {
+  background: rgba(255, 200, 87, 0.30);
+  border-color: #ffc857;
+  color: #ffc857;
+}
+.mic-btn.active {
+  background: rgba(123, 223, 242, 0.22);
+  border-color: var(--her);
+}
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(123, 223, 242, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(123, 223, 242, 0); }
+}
+
 /* On macOS the renderer moves the × to the head of the bar, where window
    controls live; Windows/Linux keep the markup position on the right. The
    title grows so it hugs its neighbors instead of centering. */
@@ -773,25 +811,7 @@ button.primary:disabled {
   border-color: var(--her);
 }
 
-/* Voice (mic) button + live-transcript status line */
-.mic-btn.mic-live {
-  color: var(--her);
-  border-color: var(--her);
-}
-.mic-btn.listening {
-  color: #fff;
-  border-color: var(--her);
-  background: rgba(123, 223, 242, 0.34);
-  animation: mic-pulse 1s ease-in-out infinite;
-}
-.mic-btn.active {
-  color: var(--her);
-  border-color: var(--her);
-}
-@keyframes mic-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(123, 223, 242, 0.4); }
-  50% { box-shadow: 0 0 0 6px rgba(123, 223, 242, 0); }
-}
+/* Voice (mic) status line (button state colors are defined near the pin button). */
 .voice-status {
   margin: 6px 2px 0;
   font-size: 11px;

@@ -122,6 +122,14 @@ let desktopPetTimer = null;
 // — it only starts once she goes idle. See scheduleDesktopPet + the chat status
 // handler.
 let chatTurnRunning = false;
+// True while MiniMax TTS audio is actually playing in the popover renderer.
+// Kept separate from chatTurnRunning because synthesis/playback happens AFTER
+// the text turn idles — and the window must not collapse (and thereby pause
+// the renderer's audio) mid-speech.
+let ttsSpeaking = false;
+// Pin the popover: when true, losing focus NEVER collapses it to the desktop
+// pet. Toggled by the 📌 button in the header.
+let pinWindow = false;
 let desktopPetPositionSaveTimer = null;
 // Transient scale during active scroll-resizing. While set, it overrides the
 // persisted setting so resizing never has to round-trip through a synchronous
@@ -936,10 +944,15 @@ function createPopover() {
   // our own settings dialogs holding focus are exempt.
   popover.on("blur", () => {
     if (isMovingPopover) return;
+    // Pin / mid-turn / mid-speech: keep the window alive so the Doctor can
+    // switch to another app (music, debugger…) without her vanishing or her
+    // voice being cut off.
+    if (pinWindow || chatTurnRunning || ttsSpeaking) return;
     if (!settings.get("desktopPet") || wsServer.isVscodeActive()) return;
     setTimeout(() => {
       if (!popover || popover.isDestroyed() || !popover.isVisible()) return;
       if (isMovingPopover) return;
+      if (pinWindow || chatTurnRunning || ttsSpeaking) return;
       if (popover.isFocused() || anyAppWindowFocused()) return;
       collapsePopoverToDesktopPet();
     }, 200);
@@ -3077,6 +3090,22 @@ app.on("before-quit", () => {
 // ============================================================
 ipcMain.handle("popover:hide", () => {
   collapsePopoverToDesktopPet();
+});
+
+ipcMain.handle("popover:pin", (_event, pinned) => {
+  pinWindow = Boolean(pinned);
+  if (popover && !popover.isDestroyed()) {
+    // Pin = always-on-top AND no collapse on focus loss (both together).
+    popover.setAlwaysOnTop(pinWindow);
+    popover.webContents.send("popover:pin-state", pinWindow);
+  }
+  return pinWindow;
+});
+
+ipcMain.handle("popover:get-pinned", () => pinWindow);
+
+ipcMain.on("minimax-tts:playback", (_event, speaking) => {
+  ttsSpeaking = Boolean(speaking);
 });
 
 ipcMain.handle("popover:activity", () => {

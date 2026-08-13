@@ -68,6 +68,14 @@ contextBridge.exposeInMainWorld("minimaxTtsApi", {
   test: (payload) => ipcRenderer.invoke("minimax-tts:test", payload),
   replay: (text) => ipcRenderer.invoke("minimax-tts:replay", text),
   onAudio: onChannel("minimax-tts:audio"),
+  // Renderer → main: report playback state so main can hold the window open
+  // while she's speaking (and avoid collapsing mid-audio).
+  reportPlayback: (speaking) => ipcRenderer.send("minimax-tts:playback", speaking),
+});
+
+contextBridge.exposeInMainWorld("pinApi", {
+  setPinned: (pinned) => ipcRenderer.invoke("popover:pin", pinned),
+  getPinned: () => ipcRenderer.invoke("popover:get-pinned"),
 });
 
 contextBridge.exposeInMainWorld("updateApi", {
