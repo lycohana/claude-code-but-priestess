@@ -2231,6 +2231,9 @@ window.minimaxTtsApi?.onAudio?.((payload) => {
   ttsPlayNext();
 });
 
+// Voice barge-in hook — voice.js calls this to stop her speech mid-utterance.
+window.__prtsStopTts = () => ttsFlushQueue();
+
 // ============================================================
 //  Message context menu — right-click a chat bubble for quick
 //  actions. The item list is extensible; currently: replay voice.

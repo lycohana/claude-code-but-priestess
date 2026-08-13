@@ -109,3 +109,20 @@ contextBridge.exposeInMainWorld("chatApi", {
   onProactive: onChannel("chat:proactive"),
   onQueue: onChannel("chat:queue")
 });
+
+contextBridge.exposeInMainWorld("voiceApi", {
+  // Fire-and-forget: high-frequency PCM chunks (Int16, 16kHz mono).
+  sendAudio: (int16) => ipcRenderer.send("voice:audio", int16),
+  pushToTalk: () => ipcRenderer.invoke("voice:push-to-talk"),
+  cancel: () => ipcRenderer.invoke("voice:cancel"),
+  getState: () => ipcRenderer.invoke("voice:get-state"),
+  setEnabled: (enabled) => ipcRenderer.invoke("voice:set-enabled", enabled),
+  // Mic-capture errors from the hidden window (permission denied, no device).
+  reportMicError: (message) => ipcRenderer.send("voice:mic-error", message),
+  // Enumerated audio-input devices, reported by the hidden mic window.
+  reportDevices: (devices) => ipcRenderer.send("voice:devices", devices),
+  // Main → mic window: switch to this deviceId ("" = OS default).
+  onDevice: onChannel("voice:device"),
+  onState: onChannel("voice:state"),
+  onStop: onChannel("minimax-tts:stop")
+});

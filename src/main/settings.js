@@ -126,7 +126,31 @@ const DEFAULTS = Object.freeze({
   // Custom pronunciation rules for MiniMax TTS, as [{text, pronunciation}]
   // pairs — "原文/替换内容". Each pair becomes a `pronunciation_dict.tone`
   // entry ("text/(chu3)(li3)" etc). Empty = no custom rules.
-  minimaxTtsPronunciationDict: []
+  minimaxTtsPronunciationDict: [],
+  // ---- Voice conversation (Windows-first) -------------------------------
+  // Speak to her with the microphone. ASR + VAD + wake-word all run locally
+  // via sherpa-onnx (WASM, main process); models live in userData/voice-models.
+  voiceEnabled: false,
+  // Always-on wake word ("普瑞赛斯"); the mic button keeps working regardless.
+  voiceWakeEnabled: true,
+  // Stop her TTS the moment you start talking (barge-in).
+  voiceBargeIn: true,
+  // Wake words spotted by the KWS model. Chinese is pinyin-encoded (both tone
+  // and tone-less variants auto-added); English is ARPAbet/acronym. Covers the
+  // Doctor's actual callers: 普瑞赛斯 / prts / 老普 / Priestess.
+  voiceWakeWords: ["普瑞赛斯", "prts", "老普", "Priestess"],
+  // Speak her replies via the existing MiniMax TTS during voice turns.
+  voiceReplyAloud: true,
+  // KWS / VAD sensitivity. Lower KWS threshold = easier to wake (more false
+  // positives); VAD threshold higher = only louder speech counts as voice.
+  // 0.1 is deliberately more sensitive than sherpa's 0.25 default because
+  // "普瑞赛斯" is a custom keyword the model never saw in training.
+  voiceKwsThreshold: 0.08,
+  voiceVadThreshold: 0.5,
+  // Which microphone to capture from. Empty = the OS default input device.
+  // Populated from the "麦克风" tray submenu (enumerated by the hidden mic
+  // window); a deviceId overrides the default.
+  voiceMicDeviceId: ""
 });
 
 let cache = { ...DEFAULTS };
@@ -157,6 +181,29 @@ function init() {
         parsed.vibeCodingMode = "agent";
       }
       delete parsed.agentMode;
+      // Migration: the first shipped voice KWS threshold (0.25) is too strict
+      // for the custom wake word 普瑞赛斯; relax it to 0.08.
+      if (parsed.voiceKwsThreshold === 0.25 || parsed.voiceKwsThreshold === 0.1) {
+        parsed.voiceKwsThreshold = 0.08;
+      }
+      // Migration: add 老普 / Priestess to the wake-word list for users on the
+      // older shorter lists.
+      if (Array.isArray(parsed.voiceWakeWords) && parsed.voiceWakeWords.includes("普瑞赛斯")) {
+        if (!parsed.voiceWakeWords.includes("老普")) {
+          parsed.voiceWakeWords = [...parsed.voiceWakeWords, "老普"];
+        }
+        if (!parsed.voiceWakeWords.includes("Priestess")) {
+          parsed.voiceWakeWords = [...parsed.voiceWakeWords, "Priestess"];
+        }
+      }
+      // Drop the now-obsolete sherpa ASR keys (replaced by FunASR GGUF).
+      delete parsed.voiceAsrModel;
+      delete parsed.voiceAsrMigrated;
+      // Sanitize a stale/synthetic mic device id ("default"/"communications"
+      // are not capturable device ids) back to the OS default.
+      if (parsed.voiceMicDeviceId === "default" || parsed.voiceMicDeviceId === "communications") {
+        parsed.voiceMicDeviceId = "";
+      }
       cache = { ...DEFAULTS, ...parsed };
       // Don't persist the stale agentMode default — it's now a derived field.
       delete cache.agentMode;

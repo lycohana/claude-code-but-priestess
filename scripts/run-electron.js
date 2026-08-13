@@ -170,7 +170,14 @@ if (process.platform === "darwin") {
     stdio: ["ignore", "inherit", "inherit"]
   });
 } else {
-  child = spawn(electron, [projectRoot], {
+  // Windows GPU drivers can crash the whole app with "GPU state invalid after
+  // WaitForGetOffsetInRange". Add the Chromium flags at the launch layer too so
+  // the GPU stays out on every dev run regardless of in-app switches.
+  const args = [projectRoot];
+  if (process.platform === "win32") {
+    args.push("--disable-gpu", "--disable-gpu-compositing");
+  }
+  child = spawn(electron, args, {
     cwd: projectRoot,
     env,
     stdio: "inherit"

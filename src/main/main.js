@@ -13,6 +13,7 @@ const {
   nativeImage,
   nativeTheme,
   shell,
+  session,
   Notification
 } = require("electron");
 
@@ -36,6 +37,41 @@ const {
 } = require("./codex-model-catalog");
 const wsServer = require("./ws-server");
 const minimaxTts = require("./minimax-tts");
+const voice = require("./voice");
+
+// Windows GPU drivers can crash the whole app ("GPU state invalid after
+// WaitForGetOffsetInRange"). This app is 2D-only, so hardware acceleration
+// buys nothing and avoiding it fixes the crash. Must run before app is ready.
+if (process.platform === "win32") {
+  app.disableHardwareAcceleration();
+  // Belt-and-suspenders: also tell Chromium to keep the GPU out entirely.
+  // This guards against driver bugs that surface even through the software
+  // compositor (the "GPU state invalid" crash).
+  if (!app.commandLine.hasSwitch("disable-gpu")) {
+    app.commandLine.appendSwitch("disable-gpu");
+  }
+  if (!app.commandLine.hasSwitch("disable-gpu-compositing")) {
+    app.commandLine.appendSwitch("disable-gpu-compositing");
+  }
+}
+
+// Crash diagnostics — write uncaught errors to the data dir so a silent
+// "闪退" leaves a trace instead of vanishing without a reason.
+let crashLogPath = null;
+function writeCrashLog(kind, error) {
+  try {
+    if (!crashLogPath) {
+      crashLogPath = path.join(app.getPath("userData"), "crash.log");
+    }
+    const line = `[${new Date().toISOString()}] ${kind}: ${error && error.stack ? error.stack : String(error)}\n`;
+    fs.appendFileSync(crashLogPath, line, "utf8");
+    console.error(kind, error);
+  } catch {
+    /* ignore */
+  }
+}
+process.on("uncaughtException", (error) => writeCrashLog("uncaughtException", error));
+process.on("unhandledRejection", (reason) => writeCrashLog("unhandledRejection", reason));
 
 let conversationFile = null;
 let saveTimer = null;
@@ -110,6 +146,8 @@ let personaNotesWindow = null;
 let creditsWindow = null;
 let minimaxTtsSettingsWindow = null;
 let systemPromptWindow = null;
+let micWindow = null;
+let micDevices = [];
 // TTS state — sentences are synthesized as they stream in (non-streaming
 // HTTP, one request per sentence) so playback starts on the first sentence
 // instead of waiting for the whole reply. The renderer plays sentence clips
@@ -205,6 +243,22 @@ function ttsOnChunk() {
     return;
   }
   ttsSpeakFirstSentence(); // firstSentence (default)
+}
+
+// Stop her speech immediately — used by voice barge-in. Clears the pending
+// sentence buffer, cancels any in-flight MiniMax synthesis, resets the clip
+// sequence, and tells the renderer to stop playing queued audio.
+function stopTts() {
+  ttsResetBuffer();
+  try {
+    minimaxTts.close();
+  } catch (_) {
+    /* ignore */
+  }
+  ttsSeq = 0;
+  if (popover && !popover.isDestroyed()) {
+    popover.webContents.send("minimax-tts:stop");
+  }
 }
 
 // One-shot TTS synthesis for the settings-window "test" button. Pushes the
@@ -752,6 +806,87 @@ function hardenWebContents(contents) {
   contents.on("will-navigate", (event, url) => {
     if (url !== contents.getURL()) event.preventDefault();
   });
+}
+
+// Hidden mic window — the single always-on microphone source. Runs in a
+// non-throttled hidden window so wake-word listening keeps working even when
+// the popover collapses to the desktop pet.
+function createMicWindow() {
+  if (micWindow && !micWindow.isDestroyed()) return micWindow;
+  micWindow = new BrowserWindow({
+    show: false,
+    width: 120,
+    height: 120,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      // The mic window never shows untrusted content; sandboxing it isolates a
+      // renderer crash so it can never take the main process (and the tray
+      // menu) down with it on Windows.
+      sandbox: true
+    }
+  });
+  hardenWebContents(micWindow.webContents);
+  micWindow.loadFile(path.join(__dirname, "..", "renderer", "mic.html"));
+  micWindow.webContents.once("did-finish-load", () => {
+    // Tell the mic window which device to capture (saved choice, or default).
+    if (micWindow && !micWindow.isDestroyed()) {
+      micWindow.webContents.send("voice:device", {
+        deviceId: settings.get("voiceMicDeviceId") || ""
+      });
+    }
+  });
+  // Crash isolation: if the mic renderer dies (a driver glitch, not a JS bug),
+  // reload it once instead of letting it sink the whole app.
+  micWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.warn("main: mic renderer gone, reloading", details?.reason);
+    if (micWindow && !micWindow.isDestroyed()) {
+      micWindow.webContents.reloadIgnoringCache();
+    }
+  });
+  micWindow.on("closed", () => {
+    micWindow = null;
+  });
+  return micWindow;
+}
+
+function destroyMicWindow() {
+  if (micWindow && !micWindow.isDestroyed()) {
+    micWindow.destroy();
+  }
+  micWindow = null;
+  micDevices = [];
+}
+
+// Single place to toggle voice: persist the setting (broadcasts settings:state
+// to every window), start/stop the engines, and create/tear down the hidden
+// mic window so the renderer UI and the capture source stay in sync.
+function setVoiceEnabled(enabled) {
+  const value = Boolean(enabled);
+  settings.set({ voiceEnabled: value });
+  voice.setEnabled(value);
+  if (value) {
+    createMicWindow();
+  } else {
+    destroyMicWindow();
+  }
+}
+
+// Select the microphone: persist the choice and tell the live mic window to
+// switch ("" = OS default input).
+function setMicDevice(deviceId) {
+  // Normalize: "default"/"communications" are synthetic ids (not a real device
+  // you can capture from) — treat them as the OS default.
+  const id = typeof deviceId === "string" && deviceId && deviceId !== "default" && deviceId !== "communications"
+    ? deviceId
+    : "";
+  settings.set({ voiceMicDeviceId: id });
+  if (micWindow && !micWindow.isDestroyed()) {
+    micWindow.webContents.send("voice:device", { deviceId: id });
+  }
 }
 
 function createPopover() {
@@ -1637,6 +1772,12 @@ const MENU_TEXT = {
     haikuAlias: "Haiku（最新别名）",
     currentCustom: (model) => `当前自定义：${model}`,
     autoScreenshot: "每轮自动截图",
+    voice: "语音对话（麦克风）",
+    voiceWake: "语音唤醒（喊「普瑞赛斯」）",
+    mic: "麦克风",
+    micDefault: "默认麦克风",
+    micDetecting: "（正在检测麦克风…）",
+    micNone: "（未检测到麦克风）",
     desktopPet: "闲置时显示桌宠",
     showDesktopPet: "立即显示桌宠",
     desktopPetSize: "桌宠尺寸",
@@ -1730,6 +1871,12 @@ const MENU_TEXT = {
     haikuAlias: "Haiku (latest alias)",
     currentCustom: (model) => `Current custom: ${model}`,
     autoScreenshot: "Auto-screenshot each turn",
+    voice: "Voice conversation (microphone)",
+    voiceWake: "Voice wake word (say \"普瑞赛斯\")",
+    mic: "Microphone",
+    micDefault: "Default microphone",
+    micDetecting: "(detecting microphones…)",
+    micNone: "(no microphone found)",
     desktopPet: "Desktop pet while idle",
     showDesktopPet: "Show desktop pet now",
     desktopPetSize: "Desktop pet size",
@@ -2348,6 +2495,42 @@ function buildContextMenu() {
       click: (item) => settings.set({ autoScreenshot: item.checked })
     },
     {
+      label: mt("voice"),
+      type: "checkbox",
+      checked: all.voiceEnabled === true,
+      click: (item) => setVoiceEnabled(item.checked)
+    },
+    {
+      label: mt("voiceWake"),
+      type: "checkbox",
+      enabled: all.voiceEnabled === true,
+      checked: all.voiceWakeEnabled !== false,
+      click: (item) => settings.set({ voiceWakeEnabled: item.checked })
+    },
+    {
+      label: mt("mic"),
+      enabled: all.voiceEnabled === true,
+      submenu: [
+        {
+          label: mt("micDefault"),
+          type: "radio",
+          checked: !(all.voiceMicDeviceId || ""),
+          click: () => setMicDevice("")
+        },
+        ...(micDevices.length === 0
+          ? [{ label: mt("micDetecting"), enabled: false }]
+          : micDevices
+              .filter((d) => d && typeof d.label === "string" && typeof d.deviceId === "string")
+              .slice(0, 20)
+              .map((d) => ({
+                label: d.label,
+                type: "radio",
+                checked: all.voiceMicDeviceId === d.deviceId,
+                click: () => setMicDevice(d.deviceId)
+              })))
+      ]
+    },
+    {
       label: mt("desktopPet"),
       type: "checkbox",
       checked: all.desktopPet !== false,
@@ -2651,6 +2834,47 @@ if (!gotSingleInstanceLock) {
   }
 
   settings.init();
+  // Voice: grant microphone permission to our own windows (audio only, never
+  // camera) and wire the voice session into the chat/TTS loop.
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    if (
+      permission === "media" &&
+      Array.isArray(details?.mediaTypes) &&
+      details.mediaTypes.length > 0 &&
+      details.mediaTypes.every((t) => t === "audio")
+    ) {
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
+  voice.init({
+    onState(payload) {
+      if (popover && !popover.isDestroyed()) {
+        popover.webContents.send("voice:state", payload);
+      }
+      // Wake from a collapsed state: bring the chat forward when she starts
+      // listening, so the live transcript is visible (same handoff as tapping
+      // the desktop pet).
+      if (payload.state === "listening" && popover && !popover.isDestroyed()) {
+        if (!popover.isVisible()) {
+          try {
+            openChatFromDesktopPet();
+          } catch (error) {
+            console.warn("main: failed to open chat on voice wake", error);
+          }
+        } else {
+          popover.focus();
+        }
+      }
+    },
+    onBargeIn() {
+      stopTts();
+    }
+  });
+  if (settings.get("voiceEnabled")) {
+    setVoiceEnabled(true);
+  }
   applyThemeSource();
   // Keep the opaque (non-macOS) popover fill aligned with the resolved
   // appearance. Fires both when the OS theme changes while in "system" mode
@@ -2672,7 +2896,19 @@ if (!gotSingleInstanceLock) {
   tray.setIgnoreDoubleClickEvents(true);
 
   tray.on("click", () => togglePopover());
-  tray.on("right-click", () => tray.popUpContextMenu(buildContextMenu()));
+  tray.on("right-click", () => {
+    try {
+      tray.popUpContextMenu(buildContextMenu());
+    } catch (error) {
+      // A malformed menu item must never take the whole app down.
+      console.error("main: failed to build context menu", error);
+      try {
+        tray.popUpContextMenu(Menu.buildFromTemplate([{ label: "PRTS", enabled: false }]));
+      } catch {
+        /* ignore */
+      }
+    }
+  });
 
   // Background update check (Windows self-updates; macOS notifies + opens the
   // download page). No-op in dev / unpackaged builds.
@@ -2832,6 +3068,8 @@ app.on("before-quit", () => {
   try { require("./vscode-chat").cancel(); } catch (_) { /* ignore */ }
   try { wsServer.stop(); } catch (_) { /* ignore */ }
   try { minimaxTts.close(); } catch (_) { /* ignore */ }
+  try { destroyMicWindow(); } catch (_) { /* ignore */ }
+  try { voice.dispose(); } catch (_) { /* ignore */ }
 });
 
 // ============================================================
@@ -2936,6 +3174,47 @@ ipcMain.handle("chat:clear", () => {
 ipcMain.handle("chat:get-history", () => chat.getHistory());
 
 ipcMain.handle("settings:get", () => buildSettingsState());
+
+// ---- Voice (mic conversation) ----
+ipcMain.on("voice:audio", (_event, int16) => {
+  if (int16 && int16.length) voice.handleAudio(int16);
+});
+ipcMain.handle("voice:push-to-talk", () => {
+  voice.pushToTalk();
+  return { ok: true };
+});
+ipcMain.handle("voice:cancel", () => {
+  voice.cancelListening();
+  return { ok: true };
+});
+ipcMain.handle("voice:get-state", () => ({
+  state: voice.getState(),
+  enabled: voice.isEnabled()
+}));
+ipcMain.handle("voice:set-enabled", (_event, next) => {
+  setVoiceEnabled(Boolean(next));
+  return buildSettingsState();
+});
+ipcMain.on("voice:mic-error", (_event, message) => {
+  // The hidden mic window couldn't capture audio — tear everything down and
+  // surface the reason, keeping settings:state in sync with reality.
+  destroyMicWindow();
+  settings.set({ voiceEnabled: false });
+  voice.reportError(message);
+});
+ipcMain.on("voice:devices", (_event, devices) => {
+  // Sanitize at the source: the mic window reports {deviceId,label}; keep only
+  // well-formed entries so a bad payload can't poison the tray submenu later.
+  if (!Array.isArray(devices)) return;
+  micDevices = devices
+    .filter((d) => d && typeof d === "object")
+    .map((d) => ({
+      deviceId: typeof d.deviceId === "string" ? d.deviceId : "",
+      label: typeof d.label === "string" && d.label ? d.label : "未命名麦克风"
+    }))
+    .filter((d) => d.deviceId)
+    .slice(0, 32);
+});
 
 ipcMain.handle("settings:pick-cwd", async () => {
   const result = await dialog.showOpenDialog({
